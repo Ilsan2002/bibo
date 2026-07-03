@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bibo</string>
+    <string name="web_tracking_description">Lets Bibo see which website is open in your browser so it can show your per-site time. Reads only the address bar; nothing leaves your phone.</string>
+</resources>

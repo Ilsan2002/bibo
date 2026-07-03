@@ -1,0 +1,48 @@
+[versions]
+agp = "8.13.2"
+kotlin = "2.3.21"
+ksp = "2.3.9"
+composeBom = "2026.06.01"
+activityCompose = "1.13.0"
+room = "2.8.4"
+icons = "1.7.8"
+lifecycleCompose = "2.10.0"
+splashscreen = "1.2.0"
+reorderable = "3.1.0"
+vico = "3.2.3"
+glance = "1.1.1"
+graphicsShapes = "1.1.0"
+genaiPrompt = "1.0.0-beta2"
+entityExtraction = "16.0.0-beta6"
+adaptive = "1.2.0"
+
+[libraries]
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+compose-material3-nav-suite = { group = "androidx.compose.material3", name = "material3-adaptive-navigation-suite" }
+compose-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "icons" }
+activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleCompose" }
+core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
+reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.ref = "reorderable" }
+vico-compose-m3 = { group = "com.patrykandpatrick.vico", name = "compose-m3", version.ref = "vico" }
+glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
+glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
+graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphicsShapes" }
+genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "genaiPrompt" }
+entity-extraction = { group = "com.google.mlkit", name = "entity-extraction", version.ref = "entityExtraction" }
+adaptive = { group = "androidx.compose.material3.adaptive", name = "adaptive", version.ref = "adaptive" }
+adaptive-layout = { group = "androidx.compose.material3.adaptive", name = "adaptive-layout", version.ref = "adaptive" }
+adaptive-navigation = { group = "androidx.compose.material3.adaptive", name = "adaptive-navigation", version.ref = "adaptive" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
