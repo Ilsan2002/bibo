@@ -82,7 +82,7 @@ fun EventEditorSheet(
                 onValueChange = { text ->
                     title = text
                     // Pull a time straight out of the title as you type: "gym 6 to 7".
-                    val ex = extractActivity(text)
+                    val ex = extractActivity(text, bias = TimeBias.PLAN)
                     if (ex.start != null && ex.end != null) {
                         start = ex.start
                         end = ex.end
@@ -136,8 +136,11 @@ fun EventEditorSheet(
                     // If the time came from the title, strip the time words so the saved
                     // block reads "gym", not "gym 6 to 7".
                     val finalTitle =
-                        if (timeFromTitle) extractActivity(title).title.ifBlank { title.trim() }
-                        else title.trim()
+                        if (timeFromTitle) {
+                            extractActivity(title, bias = TimeBias.PLAN).title.ifBlank { title.trim() }
+                        } else {
+                            title.trim()
+                        }
                     onSave(date, start, end, finalTitle)
                 },
                 enabled = title.isNotBlank(),
