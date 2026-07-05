@@ -64,6 +64,8 @@ fun EventEditorSheet(
     var pickStart by remember { mutableStateOf(false) }
     var pickEnd by remember { mutableStateOf(false) }
     var pickDate by remember { mutableStateOf(false) }
+    // true when the current start/end were parsed out of the title text
+    var timeFromTitle by remember { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
@@ -77,9 +79,27 @@ fun EventEditorSheet(
 
             OutlinedTextField(
                 value = title,
-                onValueChange = { title = it },
+                onValueChange = { text ->
+                    title = text
+                    // Pull a time straight out of the title as you type: "gym 6 to 7".
+                    val ex = extractActivity(text)
+                    if (ex.start != null && ex.end != null) {
+                        start = ex.start
+                        end = ex.end
+                        timeFromTitle = true
+                    } else {
+                        timeFromTitle = false
+                    }
+                },
                 label = { Text("Title") },
                 singleLine = true,
+                supportingText = {
+                    if (timeFromTitle) {
+                        Text("Time set from title · ${start.format(timeChipFmt)}–${end.format(timeChipFmt)}")
+                    } else {
+                        Text("Tip: type a time like “6 to 7” or “3pm”")
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -112,7 +132,14 @@ fun EventEditorSheet(
             }
 
             Button(
-                onClick = { onSave(date, start, end, title.trim()) },
+                onClick = {
+                    // If the time came from the title, strip the time words so the saved
+                    // block reads "gym", not "gym 6 to 7".
+                    val finalTitle =
+                        if (timeFromTitle) extractActivity(title).title.ifBlank { title.trim() }
+                        else title.trim()
+                    onSave(date, start, end, finalTitle)
+                },
                 enabled = title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(saveLabel) }

@@ -1,9 +1,13 @@
 package com.bibo.ui
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import java.util.Locale
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -59,13 +63,7 @@ fun HoldToTalkButton(
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasAudioPermission = granted }
 
-    val recognizer = remember {
-        if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            SpeechRecognizer.createSpeechRecognizer(context)
-        } else {
-            null
-        }
-    }
+    val recognizer = remember { buildRecognizer(context) }
     DisposableEffect(recognizer) {
         val listener = object : RecognitionListener {
             override fun onResults(results: Bundle?) {
@@ -130,15 +128,7 @@ fun HoldToTalkButton(
                             }
                             partialText = ""
                             isListening = true
-                            recognizer.startListening(
-                                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                    putExtra(
-                                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
-                                    )
-                                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                                }
-                            )
+                            recognizer.startListening(recognizeIntent(context))
                             tryAwaitRelease()
                             recognizer.stopListening()
                         }
@@ -173,3 +163,40 @@ fun HoldToTalkButton(
         }
     }
 }
+
+/**
+ * Builds a recognizer, preferring Google's speech service over the system default.
+ * On Samsung the default is often One UI's own recognizer, which transcribes noticeably
+ * worse than Google's — binding Google's service directly is the single biggest quality win.
+ */
+private fun buildRecognizer(context: Context): SpeechRecognizer? {
+    if (!SpeechRecognizer.isRecognitionAvailable(context)) return null
+    val google = ComponentName(
+        "com.google.android.googlequicksearchbox",
+        "com.google.android.voicesearch.serviceapi.GoogleRecognitionService",
+    )
+    val hasGoogle = runCatching { context.packageManager.getServiceInfo(google, 0) }.isSuccess
+    return if (hasGoogle) {
+        SpeechRecognizer.createSpeechRecognizer(context, google)
+    } else {
+        SpeechRecognizer.createSpeechRecognizer(context)
+    }
+}
+
+private fun recognizeIntent(context: Context): Intent =
+    Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        // English keeps recognition aligned with the (English) phrase parser.
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US.toLanguageTag())
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, Locale.US.toLanguageTag())
+        // Deliberately NOT setting EXTRA_PREFER_OFFLINE: the online model is much more
+        // accurate, and the phrase is short so latency is fine.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            putExtra(
+                RecognizerIntent.EXTRA_ENABLE_FORMATTING,
+                RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY,
+            )
+        }
+    }
