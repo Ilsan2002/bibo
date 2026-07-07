@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -26,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.bibo.ui.CalendarScreen
+import com.bibo.ui.HealthScreen
 import com.bibo.ui.StatsScreen
 import com.bibo.ui.TimerScreen
 import com.bibo.ui.TodoScreen
@@ -51,6 +53,7 @@ private val tabs = listOf(
     Tab("Stats", Icons.Filled.BarChart),
     Tab("Timer", Icons.Filled.Timer),
     Tab("Tasks", Icons.Filled.Checklist),
+    Tab("Daily", Icons.Filled.MonitorHeart),
 )
 
 @Composable
@@ -81,6 +84,7 @@ fun BiboApp() {
                 1 -> StatsScreen()
                 2 -> TimerScreen()
                 3 -> TodoScreen()
+                4 -> HealthScreen()
             }
         }
     }

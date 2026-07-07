@@ -13,6 +13,7 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.Upsert
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
@@ -131,6 +132,71 @@ interface UsageDao {
     suspend fun deleteFrom(from: Long)
 }
 
+/** One row per day holding the yes/no daily habits. */
+@Entity(tableName = "habit_days")
+data class HabitDay(
+    @PrimaryKey val epochDay: Long,
+    val showered: Boolean = false,
+    val cleanClothes: Boolean = false,
+    val workedOut: Boolean = false,
+    val prayed: Boolean = false,
+)
+
+/** A single food/drink logged for a day, with estimated nutrition. */
+@Entity(tableName = "food_entries", indices = [Index(value = ["epochDay"])])
+data class FoodEntry(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val epochDay: Long,
+    val createdAt: Long,
+    val label: String,
+    val calories: Int,
+    val sugarG: Double,
+    val caffeineMg: Int,
+)
+
+@Dao
+interface HabitDao {
+    @Upsert
+    suspend fun upsert(day: HabitDay)
+
+    @Query("SELECT * FROM habit_days WHERE epochDay = :epochDay")
+    fun forDay(epochDay: Long): Flow<HabitDay?>
+
+    @Query("SELECT * FROM habit_days WHERE epochDay = :epochDay")
+    suspend fun get(epochDay: Long): HabitDay?
+
+    @Query("SELECT * FROM habit_days WHERE epochDay BETWEEN :start AND :end")
+    fun range(start: Long, end: Long): Flow<List<HabitDay>>
+}
+
+@Dao
+interface FoodDao {
+    @Insert
+    suspend fun insert(entry: FoodEntry): Long
+
+    @Delete
+    suspend fun delete(entry: FoodEntry)
+
+    @Query("SELECT * FROM food_entries WHERE epochDay = :epochDay ORDER BY createdAt")
+    fun forDay(epochDay: Long): Flow<List<FoodEntry>>
+
+    @Query(
+        "SELECT epochDay AS epochDay, " +
+            "COALESCE(SUM(calories),0) AS calories, " +
+            "COALESCE(SUM(sugarG),0) AS sugarG, " +
+            "COALESCE(SUM(caffeineMg),0) AS caffeineMg " +
+            "FROM food_entries WHERE epochDay BETWEEN :start AND :end GROUP BY epochDay"
+    )
+    fun dailyTotals(start: Long, end: Long): Flow<List<DayTotals>>
+}
+
+data class DayTotals(
+    val epochDay: Long,
+    val calories: Int,
+    val sugarG: Double,
+    val caffeineMg: Int,
+)
+
 private val MIGRATION_2_3 = object : Migration(2, 3) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE todo_tasks ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
@@ -192,9 +258,30 @@ private val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+private val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS habit_days (" +
+                "epochDay INTEGER NOT NULL PRIMARY KEY, " +
+                "showered INTEGER NOT NULL DEFAULT 0, cleanClothes INTEGER NOT NULL DEFAULT 0, " +
+                "workedOut INTEGER NOT NULL DEFAULT 0, prayed INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS food_entries (" +
+                "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, epochDay INTEGER NOT NULL, " +
+                "createdAt INTEGER NOT NULL, label TEXT NOT NULL, calories INTEGER NOT NULL, " +
+                "sugarG REAL NOT NULL, caffeineMg INTEGER NOT NULL)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_food_entries_epochDay ON food_entries (epochDay)")
+    }
+}
+
 @Database(
-    entities = [ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class],
-    version = 5,
+    entities = [
+        ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
+        HabitDay::class, FoodEntry::class,
+    ],
+    version = 6,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -202,6 +289,8 @@ abstract class BiboDb : RoomDatabase() {
     abstract fun todos(): TodoDao
     abstract fun usage(): UsageDao
     abstract fun websites(): WebsiteDao
+    abstract fun habits(): HabitDao
+    abstract fun foods(): FoodDao
 
     companion object {
         @Volatile
@@ -213,7 +302,7 @@ abstract class BiboDb : RoomDatabase() {
                     context.applicationContext,
                     BiboDb::class.java,
                     "bibo.db",
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }
             }
