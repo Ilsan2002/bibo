@@ -28,8 +28,10 @@ data class ActivityBlock(
     val title: String,
     val startMillis: Long,
     val endMillis: Long,
-    val source: String, // MANUAL, TIMER, TODO, VOICE
+    val source: String, // MANUAL, TIMER, TODO, VOICE, FOCUS
     val color: Int? = null,
+    val note: String? = null, // post-session reflection (focus sessions)
+    val goalId: Long? = null, // goal a focus session counted toward
 )
 
 @Dao
@@ -229,6 +231,9 @@ interface FoodDao {
     @Query("SELECT * FROM food_entries WHERE epochDay = :epochDay ORDER BY createdAt")
     fun forDay(epochDay: Long): Flow<List<FoodEntry>>
 
+    @Query("SELECT * FROM food_entries WHERE epochDay = :epochDay")
+    suspend fun forDayOnce(epochDay: Long): List<FoodEntry>
+
     @Query(
         "SELECT epochDay AS epochDay, " +
             "COALESCE(SUM(calories),0) AS calories, " +
@@ -338,12 +343,19 @@ private val MIGRATION_6_7 = object : Migration(6, 7) {
     }
 }
 
+private val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE activity_blocks ADD COLUMN note TEXT")
+        db.execSQL("ALTER TABLE activity_blocks ADD COLUMN goalId INTEGER")
+    }
+}
+
 @Database(
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
         HabitDay::class, FoodEntry::class, Goal::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -367,6 +379,7 @@ abstract class BiboDb : RoomDatabase() {
                     "bibo.db",
                 ).addMigrations(
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+                    MIGRATION_7_8,
                 )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }

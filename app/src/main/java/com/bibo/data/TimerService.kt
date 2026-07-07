@@ -9,15 +9,40 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
- * Keeps a running activity timer alive with an ongoing notification (live elapsed time +
- * Stop action), so time tracking survives leaving the app and can be stopped from the shade.
+ * Keeps a running timer / focus session alive with an ongoing notification (live time +
+ * Stop action). For Pomodoro focus sessions it also drives the work↔break phase changes.
  */
 class TimerService : Service() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var lastPhase: String? = null
+
+    private val tick = object : Runnable {
+        override fun run() {
+            val ctx = applicationContext
+            if (!TimerController.isRunning(ctx)) {
+                stopSelf()
+                return
+            }
+            if (TimerController.isPomodoro(ctx)) {
+                val phaseEnd = TimerController.phaseEnd(ctx)
+                if (phaseEnd in 1..System.currentTimeMillis()) {
+                    val newPhase = TimerController.advancePhase(ctx)
+                    refresh(alert = true, phaseLabel = newPhase)
+                } else if (TimerController.phase(ctx) != lastPhase) {
+                    refresh(alert = false, phaseLabel = TimerController.phase(ctx))
+                }
+                handler.postDelayed(this, 1_000L)
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -32,8 +57,40 @@ class TimerService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForegroundCompat(buildNotification(TimerController.runningTitle(applicationContext), start))
+        startForegroundCompat(currentNotification(alert = false))
+        lastPhase = if (TimerController.isPomodoro(applicationContext)) TimerController.phase(applicationContext) else null
+        handler.removeCallbacks(tick)
+        if (TimerController.isPomodoro(applicationContext)) handler.postDelayed(tick, 1_000L)
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(tick)
+    }
+
+    private fun refresh(alert: Boolean, phaseLabel: String) {
+        lastPhase = phaseLabel
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(NOTIF_ID, currentNotification(alert))
+    }
+
+    private fun currentNotification(alert: Boolean): Notification {
+        val ctx = applicationContext
+        val title = TimerController.runningTitle(ctx)
+        val start = TimerController.runningStart(ctx)
+        return if (TimerController.isPomodoro(ctx)) {
+            val work = TimerController.phase(ctx) == TimerController.PHASE_WORK
+            buildNotification(
+                title = (if (work) "Focus · " else "Break · ") + title,
+                text = if (alert) (if (work) "Back to work" else "Break time 🎉") else "Tap to open Bibo",
+                whenTime = TimerController.phaseEnd(ctx),
+                countDown = true,
+                alertOnce = !alert,
+            )
+        } else {
+            buildNotification(title = title, text = "Tap to open Bibo", whenTime = start, countDown = false, alertOnce = true)
+        }
     }
 
     private fun startForegroundCompat(notification: Notification) {
@@ -44,14 +101,20 @@ class TimerService : Service() {
         }
     }
 
-    private fun buildNotification(title: String, startMillis: Long): Notification {
+    private fun buildNotification(
+        title: String,
+        text: String,
+        whenTime: Long,
+        countDown: Boolean,
+        alertOnce: Boolean,
+    ): Notification {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             manager.getNotificationChannel(CHANNEL_ID) == null
         ) {
             manager.createNotificationChannel(
                 NotificationChannel(
-                    CHANNEL_ID, "Activity timer", NotificationManager.IMPORTANCE_LOW
+                    CHANNEL_ID, "Focus & timer", NotificationManager.IMPORTANCE_LOW
                 ).apply { setShowBadge(false) }
             )
         }
@@ -70,12 +133,13 @@ class TimerService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title.ifBlank { "Timing…" })
-            .setContentText("Tap to open Bibo")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_recent_history)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
+            .setOnlyAlertOnce(alertOnce)
             .setUsesChronometer(true)
-            .setWhen(startMillis)
+            .setChronometerCountDown(countDown)
+            .setWhen(whenTime)
             .setContentIntent(openApp)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
             .build()

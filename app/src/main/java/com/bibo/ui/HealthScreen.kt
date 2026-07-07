@@ -115,6 +115,9 @@ fun HealthScreen() {
     val weekByDay = weekHabits.associateBy { it.epochDay }
 
     var showAdd by remember { mutableStateOf(false) }
+    val dayReview = remember { DayReview(context) }
+    var review by remember(epochDay) { mutableStateOf<String?>(null) }
+    var reviewing by remember { mutableStateOf(false) }
 
     fun toggle(which: Habit) {
         haptics.toggleOn()
@@ -226,6 +229,44 @@ fun HealthScreen() {
 
                 item(key = "week") {
                     WeeklyStrip(week, weekByDay, epochDay) { epochDay = it }
+                }
+
+                item(key = "review") {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                            .padding(14.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Day review",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                enabled = !reviewing,
+                                onClick = {
+                                    reviewing = true
+                                    scope.launch {
+                                        val r = withContext(Dispatchers.IO) { dayReview.generate(epochDay) }
+                                        review = r
+                                        reviewing = false
+                                    }
+                                },
+                            ) { Text(if (reviewing) "Thinking…" else "✨ Generate") }
+                        }
+                        review?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
+                    }
                 }
 
                 item(key = "food-head") {

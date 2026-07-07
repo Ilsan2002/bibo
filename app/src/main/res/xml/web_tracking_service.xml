@@ -5,5 +5,4 @@
     android:accessibilityFlags="flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:notificationTimeout="300"
-    android:description="@string/web_tracking_description"
-    android:packageNames="com.android.chrome,com.chrome.beta,com.brave.browser,com.vivaldi.browser,org.cromite.cromite,com.sec.android.app.sbrowser,com.microsoft.emmx,com.opera.browser,com.opera.mini.native,com.duckduckgo.mobile.android,org.mozilla.firefox,org.mozilla.focus" />
+    android:description="@string/web_tracking_description" />
