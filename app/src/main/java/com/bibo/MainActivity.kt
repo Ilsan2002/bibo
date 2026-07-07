@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        com.bibo.data.GoalReminders.schedule(this)
         setContent {
             BiboTheme {
                 BiboApp()

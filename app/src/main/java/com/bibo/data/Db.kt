@@ -73,7 +73,41 @@ data class TodoTask(
     val completedAt: Long? = null,
     val startedAt: Long? = null, // non-null while its timer is running
     val sortOrder: Long = 0, // manual drag-reorder position; defaults to createdAt
+    val goalId: Long? = null, // the long-term goal this task belongs to
+    val dueEpochDay: Long? = null, // optional due date, drives the calendar dot
 )
+
+/** A long-term goal — a colored folder that groups tasks and shows on the calendar. */
+@Entity(tableName = "goals")
+data class Goal(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val color: Int,
+    val targetDate: Long? = null, // optional milestone, as an epoch-day
+    val createdAt: Long,
+    val archived: Boolean = false,
+)
+
+@Dao
+interface GoalDao {
+    @Insert
+    suspend fun insert(goal: Goal): Long
+
+    @Update
+    suspend fun update(goal: Goal)
+
+    @Delete
+    suspend fun delete(goal: Goal)
+
+    @Query("SELECT * FROM goals WHERE archived = 0 ORDER BY createdAt")
+    fun all(): Flow<List<Goal>>
+
+    @Query("SELECT * FROM goals WHERE archived = 0 ORDER BY createdAt")
+    suspend fun allOnce(): List<Goal>
+
+    @Query("SELECT * FROM goals WHERE archived = 0 AND targetDate BETWEEN :start AND :end")
+    fun milestonesInRange(start: Long, end: Long): Flow<List<Goal>>
+}
 
 @Dao
 interface TodoDao {
@@ -94,6 +128,21 @@ interface TodoDao {
 
     @Query("SELECT * FROM todo_tasks ORDER BY sortOrder")
     fun all(): Flow<List<TodoTask>>
+
+    @Query(
+        "SELECT * FROM todo_tasks " +
+            "WHERE dueEpochDay BETWEEN :start AND :end AND completedAt IS NULL"
+    )
+    fun dueInRange(start: Long, end: Long): Flow<List<TodoTask>>
+
+    @Query("UPDATE todo_tasks SET goalId = NULL WHERE goalId = :goalId")
+    suspend fun clearGoal(goalId: Long)
+
+    @Query(
+        "SELECT * FROM todo_tasks WHERE goalId = :goalId AND completedAt IS NULL " +
+            "AND parentId IS NULL ORDER BY sortOrder LIMIT 1"
+    )
+    suspend fun nextForGoal(goalId: Long): TodoTask?
 }
 
 /**
@@ -276,12 +325,25 @@ private val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
+private val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS goals (" +
+                "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, " +
+                "color INTEGER NOT NULL, targetDate INTEGER, createdAt INTEGER NOT NULL, " +
+                "archived INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execSQL("ALTER TABLE todo_tasks ADD COLUMN goalId INTEGER")
+        db.execSQL("ALTER TABLE todo_tasks ADD COLUMN dueEpochDay INTEGER")
+    }
+}
+
 @Database(
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
-        HabitDay::class, FoodEntry::class,
+        HabitDay::class, FoodEntry::class, Goal::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -291,6 +353,7 @@ abstract class BiboDb : RoomDatabase() {
     abstract fun websites(): WebsiteDao
     abstract fun habits(): HabitDao
     abstract fun foods(): FoodDao
+    abstract fun goals(): GoalDao
 
     companion object {
         @Volatile
@@ -302,7 +365,9 @@ abstract class BiboDb : RoomDatabase() {
                     context.applicationContext,
                     BiboDb::class.java,
                     "bibo.db",
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(
+                    MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+                )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }
             }

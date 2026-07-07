@@ -1,9 +1,13 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 
 package com.bibo.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,8 +20,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,9 +40,15 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SubdirectoryArrowRight
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -80,6 +92,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
+import com.bibo.data.Goal
 import com.bibo.data.TodoTask
 import java.time.LocalDate
 import java.time.ZoneId
@@ -100,11 +113,16 @@ fun TodoScreen() {
     val snackbarHostState = remember { SnackbarHostState() }
 
     val tasks by db.todos().all().collectAsState(initial = emptyList())
+    val goals by db.goals().all().collectAsState(initial = emptyList())
+    val goalsById = goals.associateBy { it.id }
 
     var addSheetParent by remember { mutableStateOf<TodoTask?>(null) }
     var showAddSheet by remember { mutableStateOf(false) }
     var editTask by remember { mutableStateOf<TodoTask?>(null) }
     var archiveExpanded by remember { mutableStateOf(false) }
+    var filterGoalId by remember { mutableStateOf<Long?>(null) }
+    var showGoalEditor by remember { mutableStateOf(false) }
+    var editGoal by remember { mutableStateOf<Goal?>(null) }
     // ids whose delete is pending an undo window — filtered out of the UI meanwhile
     val pendingDelete = remember { mutableStateOf(setOf<Long>()) }
 
@@ -121,7 +139,9 @@ fun TodoScreen() {
 
     val visible = tasks.filter { it.id !in pendingDelete.value }
     val children = visible.filter { it.parentId != null }.groupBy { it.parentId }
-    val parents = visible.filter { it.parentId == null }
+    val allParents = visible.filter { it.parentId == null }
+    // When a goal folder is open, show only that goal's tasks.
+    val parents = if (filterGoalId == null) allParents else allParents.filter { it.goalId == filterGoalId }
     val archivedDone = parents.filter { it.completedAt != null && it.completedAt < startOfToday }
     val doneToday = parents.filter { (it.completedAt ?: 0) >= startOfToday }
 
@@ -229,7 +249,7 @@ fun TodoScreen() {
             }
         },
     ) { padding ->
-        if (parents.isEmpty()) {
+        if (allParents.isEmpty() && goals.isEmpty()) {
             Column(
                 Modifier
                     .fillMaxSize()
@@ -264,13 +284,32 @@ fun TodoScreen() {
                     .padding(padding),
                 contentPadding = PaddingValues(bottom = 96.dp),
             ) {
-                item(key = "header") {
+                item(key = "goals") {
                     Text(
                         "Tasks",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
+                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 8.dp),
                     )
+                    GoalSummaryRow(
+                        goals = goals,
+                        tasks = allParents,
+                        selected = filterGoalId,
+                        onSelect = { filterGoalId = if (filterGoalId == it) null else it },
+                        onNewGoal = { editGoal = null; showGoalEditor = true },
+                        onEditGoal = { editGoal = it; showGoalEditor = true },
+                    )
+                }
+
+                if (activeParents.isEmpty()) {
+                    item(key = "goal-empty") {
+                        Text(
+                            if (filterGoalId != null) "No open tasks in this goal." else "No open tasks.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
                 }
 
                 items(ordered, key = { it.id }) { task ->
@@ -286,6 +325,7 @@ fun TodoScreen() {
                                 isChild = false,
                                 dragging = isDragging,
                                 now = now,
+                                goalColor = task.goalId?.let { goalsById[it]?.color },
                                 subtaskProgress = if (subs.isNotEmpty()) {
                                     subs.count { it.completedAt != null } to subs.size
                                 } else null,
@@ -412,13 +452,19 @@ fun TodoScreen() {
     }
 
     if (showAddSheet) {
+        val parent = addSheetParent
         AddTaskSheet(
-            parent = addSheetParent,
+            parent = parent,
+            goals = goals,
+            // subtasks inherit their parent's goal; new top-level tasks default to the open folder
+            initialGoalId = parent?.goalId ?: filterGoalId,
+            showGoalPicker = parent == null,
             onDismiss = { showAddSheet = false },
-            onAdd = { title ->
+            onAdd = { title, goalId ->
                 showAddSheet = false
                 haptics.confirm()
-                val parentId = addSheetParent?.id
+                val parentId = parent?.id
+                val resolvedGoal = parent?.goalId ?: goalId
                 scope.launch(Dispatchers.IO) {
                     val now2 = System.currentTimeMillis()
                     db.todos().insert(
@@ -427,8 +473,40 @@ fun TodoScreen() {
                             parentId = parentId,
                             createdAt = now2,
                             sortOrder = now2, // new tasks sort to the bottom
+                            goalId = resolvedGoal,
                         )
                     )
+                }
+            },
+        )
+    }
+
+    if (showGoalEditor) {
+        GoalEditorSheet(
+            goal = editGoal,
+            onDismiss = { showGoalEditor = false },
+            onSave = { name, color, targetDay ->
+                showGoalEditor = false
+                haptics.confirm()
+                val existing = editGoal
+                scope.launch(Dispatchers.IO) {
+                    if (existing == null) {
+                        db.goals().insert(
+                            Goal(name = name, color = color, targetDate = targetDay, createdAt = System.currentTimeMillis())
+                        )
+                    } else {
+                        db.goals().update(existing.copy(name = name, color = color, targetDate = targetDay))
+                    }
+                }
+            },
+            onDelete = editGoal?.let { g ->
+                {
+                    showGoalEditor = false
+                    if (filterGoalId == g.id) filterGoalId = null
+                    scope.launch(Dispatchers.IO) {
+                        db.todos().clearGoal(g.id)
+                        db.goals().delete(g)
+                    }
                 }
             },
         )
@@ -529,6 +607,7 @@ private fun TaskRow(
     isChild: Boolean,
     dragging: Boolean,
     now: Long,
+    goalColor: Int? = null,
     subtaskProgress: Pair<Int, Int>?,
     onToggleComplete: (Boolean) -> Unit,
     onToggleTimer: (() -> Unit)?,
@@ -565,6 +644,15 @@ private fun TaskRow(
             )
         }
         Checkbox(checked = completed, onCheckedChange = onToggleComplete)
+        if (goalColor != null) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(Color(goalColor))
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(
                 task.title,
@@ -637,11 +725,15 @@ private fun TaskRow(
 @Composable
 private fun AddTaskSheet(
     parent: TodoTask?,
+    goals: List<Goal>,
+    initialGoalId: Long?,
+    showGoalPicker: Boolean,
     onDismiss: () -> Unit,
-    onAdd: (String) -> Unit,
+    onAdd: (String, Long?) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var title by remember { mutableStateOf("") }
+    var goalId by remember { mutableStateOf(initialGoalId) }
     val focusRequester = remember { FocusRequester() }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -663,18 +755,212 @@ private fun AddTaskSheet(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = {
-                    if (title.isNotBlank()) onAdd(title.trim())
+                    if (title.isNotBlank()) onAdd(title.trim(), goalId)
                 }),
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester),
             )
+            if (showGoalPicker && goals.isNotEmpty()) {
+                Text("Goal", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = goalId == null,
+                        onClick = { goalId = null },
+                        label = { Text("None") },
+                    )
+                    goals.forEach { g ->
+                        FilterChip(
+                            selected = goalId == g.id,
+                            onClick = { goalId = g.id },
+                            leadingIcon = {
+                                Box(Modifier.size(10.dp).clip(CircleShape).background(Color(g.color)))
+                            },
+                            label = { Text(g.name) },
+                        )
+                    }
+                }
+            }
             Button(
-                onClick = { onAdd(title.trim()) },
+                onClick = { onAdd(title.trim(), goalId) },
                 enabled = title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Add") }
         }
     }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
+}
+
+@Composable
+private fun GoalSummaryRow(
+    goals: List<Goal>,
+    tasks: List<TodoTask>,
+    selected: Long?,
+    onSelect: (Long) -> Unit,
+    onNewGoal: () -> Unit,
+    onEditGoal: (Goal) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        items(goals, key = { it.id }) { g ->
+            val goalTasks = tasks.filter { it.goalId == g.id }
+            val done = goalTasks.count { it.completedAt != null }
+            val next = goalTasks.filter { it.completedAt == null }.minByOrNull { it.sortOrder }
+            val isSel = selected == g.id
+            Column(
+                Modifier
+                    .width(168.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        if (isSel) Color(g.color).copy(alpha = 0.20f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    )
+                    .combinedClickable(
+                        onClick = { onSelect(g.id) },
+                        onLongClick = { onEditGoal(g) },
+                    )
+                    .padding(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(Color(g.color)))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        g.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "$done / ${goalTasks.size} done",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    next?.let { "Next: ${it.title}" } ?: "All done 🎉",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+        item(key = "new-goal") {
+            Column(
+                Modifier
+                    .width(120.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
+                    .combinedClickable(onClick = onNewGoal)
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(Icons.Filled.Add, "New goal", tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(4.dp))
+                Text("New goal", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+private val GOAL_COLORS = listOf(
+    0xFF5B9DFF, 0xFF4FC28C, 0xFFF4A63C, 0xFFEC407A, 0xFFB08CFF,
+    0xFF26C6A6, 0xFFEF6C00, 0xFF8D6E63, 0xFF3FC6D8, 0xFFE53935,
+).map { it.toInt() }
+
+@Composable
+private fun GoalEditorSheet(
+    goal: Goal?,
+    onDismiss: () -> Unit,
+    onSave: (String, Int, Long?) -> Unit,
+    onDelete: (() -> Unit)?,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var name by remember { mutableStateOf(goal?.name ?: "") }
+    var color by remember { mutableStateOf(goal?.color ?: GOAL_COLORS.first()) }
+    var targetDay by remember { mutableStateOf(goal?.targetDate) }
+    var pickDate by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(if (goal == null) "New goal" else "Edit goal", style = MaterialTheme.typography.titleLarge)
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Goal name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text("Color", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                GOAL_COLORS.forEach { c ->
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color(c))
+                            .then(
+                                if (c == color) Modifier.padding(0.dp) else Modifier
+                            )
+                            .combinedClickable(onClick = { color = c }),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (c == color) Icon(Icons.Filled.Check, null, tint = Color.White)
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = { pickDate = true },
+                    label = {
+                        Text(
+                            targetDay?.let { "Target: " + LocalDate.ofEpochDay(it).format(java.time.format.DateTimeFormatter.ofPattern("MMM d")) }
+                                ?: "Set target date"
+                        )
+                    },
+                )
+                if (targetDay != null) {
+                    TextButton(onClick = { targetDay = null }) { Text("Clear") }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (onDelete != null) {
+                    OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                Button(
+                    onClick = { onSave(name.trim(), color, targetDay) },
+                    enabled = name.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) { Text("Save") }
+            }
+        }
+    }
+
+    if (pickDate) {
+        val dpState = rememberDatePickerState(
+            initialSelectedDateMillis = (targetDay ?: LocalDate.now().toEpochDay()) * 86_400_000L
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickDate = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    dpState.selectedDateMillis?.let { targetDay = it / 86_400_000L }
+                    pickDate = false
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { pickDate = false }) { Text("Cancel") } },
+        ) { DatePicker(state = dpState) }
+    }
 }

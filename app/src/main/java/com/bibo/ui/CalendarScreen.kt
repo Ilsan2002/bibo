@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
@@ -61,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -121,6 +123,29 @@ fun CalendarScreen() {
     var daysVisible by rememberSaveable { mutableIntStateOf(1) }
     var anchorEpochDay by rememberSaveable { mutableLongStateOf(LocalDate.now().toEpochDay()) }
     var scaling by rememberSaveable { mutableFloatStateOf(1f) }
+
+    // Goal dots on the date strip: a colored dot on any day with a due task or a goal milestone.
+    val dotWindowStart = remember { LocalDate.now().toEpochDay() - 60 }
+    val dotWindowEnd = remember { LocalDate.now().toEpochDay() + 120 }
+    val goals by remember { db.goals().all() }.collectAsState(initial = emptyList())
+    val dueTasks by remember { db.todos().dueInRange(dotWindowStart, dotWindowEnd) }
+        .collectAsState(initial = emptyList())
+    val milestones by remember { db.goals().milestonesInRange(dotWindowStart, dotWindowEnd) }
+        .collectAsState(initial = emptyList())
+    val goalColorById = goals.associate { it.id to it.color }
+    val dotsByDay: Map<Long, List<Int>> = remember(dueTasks, milestones, goalColorById) {
+        val m = HashMap<Long, LinkedHashSet<Int>>()
+        dueTasks.forEach { t ->
+            val day = t.dueEpochDay ?: return@forEach
+            val color = t.goalId?.let { goalColorById[it] } ?: return@forEach
+            m.getOrPut(day) { LinkedHashSet() }.add(color)
+        }
+        milestones.forEach { g ->
+            val day = g.targetDate ?: return@forEach
+            m.getOrPut(day) { LinkedHashSet() }.add(g.color)
+        }
+        m.mapValues { it.value.toList() }
+    }
 
     var hasCalPermission by remember { mutableStateOf(calRepo.hasPermissions()) }
     var hasUsagePermission by remember { mutableStateOf(usageRepo.hasPermission()) }
@@ -203,6 +228,7 @@ fun CalendarScreen() {
                 center = visibleStart,
                 selStart = visibleStart,
                 selCount = daysVisible,
+                dotsByDay = dotsByDay,
                 onPick = { d -> anchorEpochDay = d.toEpochDay() },
             )
 
@@ -369,6 +395,7 @@ private fun DateStrip(
     center: LocalDate,
     selStart: LocalDate,
     selCount: Int,
+    dotsByDay: Map<Long, List<Int>>,
     onPick: (LocalDate) -> Unit,
 ) {
     val today = LocalDate.now()
@@ -382,6 +409,7 @@ private fun DateStrip(
             val d = center.plusDays(offset.toLong())
             val selected = !d.isBefore(selStart) && d.isBefore(selStart.plusDays(selCount.toLong()))
             val isToday = d == today
+            val dots = dotsByDay[d.toEpochDay()].orEmpty()
             Column(
                 Modifier
                     .clip(RoundedCornerShape(14.dp))
@@ -412,6 +440,20 @@ private fun DateStrip(
                         else -> MaterialTheme.colorScheme.onSurface
                     },
                 )
+                // goal dots
+                Row(
+                    Modifier.height(8.dp).padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    dots.take(4).forEach { c ->
+                        Box(
+                            Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(Color(c))
+                        )
+                    }
+                }
             }
         }
     }
