@@ -23,6 +23,18 @@ voice logging, and a to-do list, all backed by local storage. Built for one user
 - **Tasks** — subtasks, per-task timer, **swipe to complete / delete with undo**,
   **drag-to-reorder**, done-today + collapsible completed archive. Completed/timed tasks
   land on the calendar.
+- **Focus Mode** (Timer tab) — set an intention, link a goal, pick apps to **block**
+  (accessibility overlay bounces you back), optional **Pomodoro** cycles and **auto-DND**;
+  ends with a reflection note saved to the calendar block.
+- **Daily** — voice-log what you ate (Gemini Nano estimates calories / sugar / caffeine),
+  tick daily habits (shower, clean clothes, workout, prayer), weekly dot strip, and an
+  AI **day review** card.
+- **Goals** — long-term goals as colored folders of tasks; progress summary cards,
+  colored dots on the calendar's date strip, and a daily goal-spotlight notification.
+- **Mentor** — a Claude-powered coach (Anthropic API, key stays on-device) that sees your
+  goals, focus sessions, habits, intake, and screen time. Continuous across days via
+  layered memory: raw chat (2 days) + model-written per-day digests + an evolving
+  memory-notes document rewritten at each day rollover.
 - **Homescreen widget** (Jetpack Glance) — today's agenda + one-tap timer start.
 - **Quick Settings tile** — toggle the activity timer from the shade.
 - **Polish** — semantic haptics throughout, themed splash screen, adaptive navigation
@@ -42,8 +54,12 @@ voice logging, and a to-do list, all backed by local storage. Built for one user
 - Charts hand-rolled in Compose (Vico is also a declared dependency for future use)
 - **Jetpack Glance** widget, **Quick Settings** `TileService`, **AccessibilityService**
   for per-website time, foreground `TimerService`, `sh.calvin.reorderable` for task drag
-- Data layer: Room `bibo.db` (v5) — activity_blocks, todo_tasks, usage_sessions,
-  website_sessions; migrations preserve data across upgrades
+- **Anthropic Java SDK** (`com.anthropic:anthropic-java`) for the Mentor chat —
+  `claude-opus-4-8`, adaptive thinking; needs `packaging { resources { excludes } }`
+  for its Apache-jar `META-INF` files on Android
+- Data layer: Room `bibo.db` (v9) — activity_blocks, todo_tasks, usage_sessions,
+  website_sessions, habit_days, food_entries, goals, chat_messages, chat_days;
+  migrations preserve data across upgrades
 
 ## UX notes
 
@@ -62,7 +78,10 @@ voice logging, and a to-do list, all backed by local storage. Built for one user
 | Usage Access | per-app screen time | manual toggle in Settings (app opens the screen for you) |
 | Microphone | voice logging | normal runtime prompt |
 | Notifications | running-timer notification | normal runtime prompt (Start timer) |
-| Accessibility | per-website time (reads address bar only) | manual toggle in Settings (Stats → Websites → Enable) |
+| Accessibility | per-website time + focus-mode app blocking | manual toggle in Settings (Stats → Websites → Enable) |
+| Display over other apps | focus-mode blocking overlay | prompt from Focus setup |
+| Do Not Disturb access | auto-DND during focus sessions | prompt from Focus setup |
+| Internet | Mentor chat (Claude API) — the only network feature | install-time, automatic |
 
 On Android 13+, sideloaded apps hit **"Restricted settings"** when granting Usage Access
 or Accessibility — if the toggle is greyed out, open *App info → ⋮ → Allow restricted
