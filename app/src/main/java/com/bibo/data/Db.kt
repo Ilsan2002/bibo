@@ -145,6 +145,18 @@ interface TodoDao {
             "AND parentId IS NULL ORDER BY sortOrder LIMIT 1"
     )
     suspend fun nextForGoal(goalId: Long): TodoTask?
+
+    @Query("SELECT COUNT(*) FROM todo_tasks WHERE goalId = :goalId")
+    suspend fun countForGoal(goalId: Long): Int
+
+    @Query("SELECT COUNT(*) FROM todo_tasks WHERE goalId = :goalId AND completedAt IS NOT NULL")
+    suspend fun completedCountForGoal(goalId: Long): Int
+
+    @Query("SELECT title FROM todo_tasks WHERE completedAt BETWEEN :start AND :end")
+    suspend fun completedTitlesBetween(start: Long, end: Long): List<String>
+
+    @Query("SELECT title FROM todo_tasks WHERE dueEpochDay = :epochDay AND completedAt IS NULL")
+    suspend fun dueTitlesOnDay(epochDay: Long): List<String>
 }
 
 /**
@@ -350,12 +362,80 @@ private val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
+/** One message in the ongoing mentor chat. */
+@Entity(tableName = "chat_messages", indices = [Index(value = ["epochDay"])])
+data class ChatMessage(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val epochDay: Long,
+    val role: String, // USER, ASSISTANT, or ERROR (shown in UI, never sent to the model)
+    val content: String,
+    val createdAt: Long,
+)
+
+/**
+ * Compact summary of one past day — the mentor's episodic memory. Written by the model
+ * for days that had conversation, or assembled locally from logged data otherwise.
+ */
+@Entity(tableName = "chat_days")
+data class ChatDay(
+    @PrimaryKey val epochDay: Long,
+    val digest: String,
+)
+
+@Dao
+interface ChatDao {
+    @Insert
+    suspend fun insert(message: ChatMessage): Long
+
+    @Query("SELECT * FROM chat_messages ORDER BY id")
+    fun all(): Flow<List<ChatMessage>>
+
+    @Query("SELECT * FROM chat_messages WHERE epochDay >= :sinceDay AND role != 'ERROR' ORDER BY id")
+    suspend fun since(sinceDay: Long): List<ChatMessage>
+
+    @Query("SELECT * FROM chat_messages WHERE epochDay = :epochDay AND role != 'ERROR' ORDER BY id")
+    suspend fun forDay(epochDay: Long): List<ChatMessage>
+
+    @Query(
+        "SELECT DISTINCT epochDay FROM chat_messages WHERE epochDay < :today " +
+            "AND epochDay NOT IN (SELECT epochDay FROM chat_days) ORDER BY epochDay"
+    )
+    suspend fun undigestedDays(today: Long): List<Long>
+}
+
+@Dao
+interface ChatDayDao {
+    @Upsert
+    suspend fun upsert(day: ChatDay)
+
+    @Query("SELECT * FROM chat_days WHERE epochDay = :epochDay")
+    suspend fun get(epochDay: Long): ChatDay?
+
+    @Query("SELECT * FROM chat_days WHERE epochDay >= :sinceDay ORDER BY epochDay")
+    suspend fun since(sinceDay: Long): List<ChatDay>
+}
+
+private val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS chat_messages (" +
+                "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, epochDay INTEGER NOT NULL, " +
+                "role TEXT NOT NULL, content TEXT NOT NULL, createdAt INTEGER NOT NULL)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_chat_messages_epochDay ON chat_messages (epochDay)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS chat_days (" +
+                "epochDay INTEGER NOT NULL PRIMARY KEY, digest TEXT NOT NULL)"
+        )
+    }
+}
+
 @Database(
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
-        HabitDay::class, FoodEntry::class, Goal::class,
+        HabitDay::class, FoodEntry::class, Goal::class, ChatMessage::class, ChatDay::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -366,6 +446,8 @@ abstract class BiboDb : RoomDatabase() {
     abstract fun habits(): HabitDao
     abstract fun foods(): FoodDao
     abstract fun goals(): GoalDao
+    abstract fun chat(): ChatDao
+    abstract fun chatDays(): ChatDayDao
 
     companion object {
         @Volatile
@@ -379,7 +461,7 @@ abstract class BiboDb : RoomDatabase() {
                     "bibo.db",
                 ).addMigrations(
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-                    MIGRATION_7_8,
+                    MIGRATION_7_8, MIGRATION_8_9,
                 )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }

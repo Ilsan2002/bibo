@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Checklist
@@ -27,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.bibo.ui.CalendarScreen
+import com.bibo.ui.ChatScreen
 import com.bibo.ui.HealthScreen
 import com.bibo.ui.StatsScreen
 import com.bibo.ui.TimerScreen
@@ -55,6 +57,7 @@ private val tabs = listOf(
     Tab("Timer", Icons.Filled.Timer),
     Tab("Tasks", Icons.Filled.Checklist),
     Tab("Daily", Icons.Filled.MonitorHeart),
+    Tab("Mentor", Icons.AutoMirrored.Filled.Chat),
 )
 
 @Composable
@@ -86,6 +89,7 @@ fun BiboApp() {
                 2 -> TimerScreen()
                 3 -> TodoScreen()
                 4 -> HealthScreen()
+                5 -> ChatScreen()
             }
         }
     }
