@@ -1,5 +1,6 @@
 package com.bibo
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -21,6 +22,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -36,16 +39,31 @@ import com.bibo.ui.TodoScreen
 import com.bibo.ui.theme.BiboTheme
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val EXTRA_OPEN_TAB = "open_tab"
+        const val TAB_MENTOR = 5
+    }
+
+    // Tab requested by a notification tap; -1 means none. Consumed by BiboApp.
+    private val tabRequest = mutableIntStateOf(-1)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         com.bibo.data.GoalReminders.schedule(this)
+        com.bibo.data.MentorCheckin.schedule(this)
+        tabRequest.intValue = intent?.getIntExtra(EXTRA_OPEN_TAB, -1) ?: -1
         setContent {
             BiboTheme {
-                BiboApp()
+                BiboApp(tabRequest)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        tabRequest.intValue = intent.getIntExtra(EXTRA_OPEN_TAB, -1)
     }
 }
 
@@ -61,8 +79,19 @@ private val tabs = listOf(
 )
 
 @Composable
-fun BiboApp() {
+fun BiboApp(tabRequest: MutableIntState? = null) {
     var selected by rememberSaveable { mutableIntStateOf(0) }
+
+    // A notification tap can ask for a specific tab (e.g. mentor check-in → Mentor).
+    if (tabRequest != null) {
+        LaunchedEffect(tabRequest.intValue) {
+            val requested = tabRequest.intValue
+            if (requested in tabs.indices) {
+                selected = requested
+                tabRequest.intValue = -1
+            }
+        }
+    }
 
     // NavigationSuiteScaffold shows a bottom bar on compact widths (folded / phone)
     // and a navigation rail when the screen is wide (Fold unfolded, landscape).

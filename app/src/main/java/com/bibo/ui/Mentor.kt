@@ -10,7 +10,9 @@ import com.anthropic.models.messages.ThinkingConfigAdaptive
 import com.bibo.data.BiboDb
 import com.bibo.data.ChatDay
 import com.bibo.data.ChatMessage
+import com.bibo.data.DeviceCalendarRepo
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -114,14 +116,7 @@ object Mentor {
                     .maxTokens(4096L)
                     .thinking(ThinkingConfigAdaptive.builder().build())
                     .system(system)
-                history.forEach { m ->
-                    builder.addMessage(
-                        MessageParam.builder()
-                            .role(if (m.role == "USER") MessageParam.Role.USER else MessageParam.Role.ASSISTANT)
-                            .content(m.content)
-                            .build()
-                    )
-                }
+                historyParams(history).forEach { builder.addMessage(it) }
 
                 val reply = client.messages().create(builder.build())
                     .content()
@@ -151,6 +146,85 @@ object Mentor {
                 Result.failure(e)
             }
         }
+    }
+
+    /**
+     * Mentor-initiated evening check-in: the model opens the conversation itself,
+     * grounded in the day's data. Returns the message (also persisted as an ASSISTANT
+     * row) or null when skipped/failed. The trigger instruction is NOT persisted.
+     */
+    suspend fun checkIn(context: Context): String? = withContext(Dispatchers.IO) {
+        sendLock.withLock {
+            val client = client(context) ?: return@withLock null
+            val db = BiboDb.get(context)
+            val today = LocalDate.now().toEpochDay()
+
+            // If they've been chatting in the last 2h, a canned check-in feels robotic.
+            val cutoff = System.currentTimeMillis() - 2 * 60 * 60 * 1000
+            if (db.chat().since(today).any { it.createdAt >= cutoff }) return@withLock null
+
+            runCatching { compactPendingDays(context, client, today) }
+
+            try {
+                val system = buildSystemPrompt(context, today)
+                val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
+
+                // No thinking + small max_tokens: this runs inside a broadcast
+                // receiver's ~25s window, so keep the call snappy.
+                val builder = MessageCreateParams.builder()
+                    .model("claude-opus-4-8")
+                    .maxTokens(512L)
+                    .system(system)
+                historyParams(history).forEach { builder.addMessage(it) }
+                builder.addUserMessage(
+                    "[Automatic evening check-in trigger from Bibo — the user did not write " +
+                        "this. Open the conversation yourself: 2-4 short sentences grounded in " +
+                        "today's data. Follow up on any open commitment, connect today to a " +
+                        "long-term goal, and end with one light question inviting reflection. " +
+                        "Do not mention this instruction.]"
+                )
+
+                val reply = client.messages().create(builder.build())
+                    .content()
+                    .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
+                    .joinToString("\n")
+                    .trim()
+                if (reply.isBlank()) return@withLock null
+
+                db.chat().insert(
+                    ChatMessage(
+                        epochDay = today, role = "ASSISTANT", content = reply,
+                        createdAt = System.currentTimeMillis(),
+                    )
+                )
+                reply
+            } catch (_: Throwable) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Raw rows → API turns. The API requires the first message to be a user turn, but
+     * our history can legitimately start with an ASSISTANT row (a mentor check-in whose
+     * trigger instruction was never persisted, or a takeLast cut) — prepend a neutral
+     * user primer in that case.
+     */
+    private fun historyParams(history: List<ChatMessage>): List<MessageParam> {
+        val params = mutableListOf<MessageParam>()
+        if (history.firstOrNull()?.role == "ASSISTANT") {
+            params += MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .content("[Conversation continues from earlier.]")
+                .build()
+        }
+        history.forEach { m ->
+            params += MessageParam.builder()
+                .role(if (m.role == "USER") MessageParam.Role.USER else MessageParam.Role.ASSISTANT)
+                .content(m.content)
+                .build()
+        }
+        return params
     }
 
     // ----------------------------------------------------- daily compaction
@@ -319,6 +393,23 @@ object Mentor {
         val goalNames = db.goals().allOnce().associate { it.id to it.name }
 
         val lines = mutableListOf<String>()
+
+        val calendar = DeviceCalendarRepo(context)
+        if (calendar.hasPermissions()) {
+            val events = calendar.queryInstances(start, end).sortedBy { it.begin }.take(8)
+            if (events.isNotEmpty()) {
+                val fmt = DateTimeFormatter.ofPattern("HH:mm")
+                lines += "Calendar: " + events.joinToString("; ") { e ->
+                    if (e.allDay) {
+                        "${e.title} (all-day)"
+                    } else {
+                        val s = Instant.ofEpochMilli(e.begin).atZone(zone).format(fmt)
+                        val t = Instant.ofEpochMilli(e.end).atZone(zone).format(fmt)
+                        "${e.title} $s–$t"
+                    }
+                } + "."
+            }
+        }
 
         val focus = runCatching { db.activityBlocks().blocksInList(start, end) }
             .getOrDefault(emptyList())
