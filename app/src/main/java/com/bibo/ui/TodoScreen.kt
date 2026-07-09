@@ -181,17 +181,21 @@ fun TodoScreen() {
             withContext(Dispatchers.IO) {
                 if (complete) {
                     val end = System.currentTimeMillis()
-                    val start = task.startedAt ?: (end - 15 * 60_000L)
-                    if (task.startedAt != null && end - start >= 60_000L) {
-                        db.activityBlocks().insert(
-                            ActivityBlock(
-                                title = task.title,
-                                startMillis = start,
-                                endMillis = end,
-                                source = "TODO",
-                            )
+                    val timedStart = task.startedAt
+                    // Every completed task lands on the calendar: its real timed interval
+                    // when the timer ran long enough, otherwise a short marker ending now.
+                    val start =
+                        if (timedStart != null && end - timedStart >= 60_000L) timedStart
+                        else end - 15 * 60_000L
+                    db.activityBlocks().insert(
+                        ActivityBlock(
+                            title = task.title,
+                            startMillis = start,
+                            endMillis = end,
+                            source = "TODO",
+                            goalId = task.goalId,
                         )
-                    }
+                    )
                     db.todos().update(task.copy(completedAt = end, startedAt = null))
                     children[task.id]?.filter { it.completedAt == null }?.forEach {
                         db.todos().update(it.copy(completedAt = end, startedAt = null))

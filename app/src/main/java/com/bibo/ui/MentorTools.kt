@@ -266,7 +266,15 @@ object MentorTools {
         val match = open.firstOrNull { it.title.equals(q, true) }
             ?: open.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
             ?: return "No open task matching \"$q\"."
-        db.todos().update(match.copy(completedAt = System.currentTimeMillis(), startedAt = null))
+        val end = System.currentTimeMillis()
+        db.todos().update(match.copy(completedAt = end, startedAt = null))
+        // Land it on the calendar too, matching the Tasks-tab complete flow.
+        db.activityBlocks().insert(
+            ActivityBlock(
+                title = match.title, startMillis = end - 15 * 60_000L,
+                endMillis = end, source = "TODO", goalId = match.goalId,
+            )
+        )
         return "Marked \"${match.title}\" done."
     }
 }
