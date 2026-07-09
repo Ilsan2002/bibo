@@ -33,26 +33,40 @@ object MentorCheckin {
     const val ACTION_CHECKIN = "com.bibo.action.MENTOR_CHECKIN"
     private const val KEY_LAST_AT = "last_checkin_at"
 
-    /** Don't fire two check-ins closer together than this, whatever the schedule says. */
-    private const val MIN_GAP_MS = 90 * 60 * 1000L
+    /**
+     * Don't fire two check-ins closer together than this, whatever the schedule says.
+     * Kept just under an hour so the hourly slots below each pass, while a stray
+     * double-fire (a manual trigger landing next to a scheduled one) is still deduped.
+     */
+    private const val MIN_GAP_MS = 45 * 60 * 1000L
 
-    /** Times of day the mentor reaches out (hour, minute), across waking hours. */
-    private val SLOTS = listOf(
-        8 to 30, 11 to 0, 13 to 30, 16 to 0, 18 to 30, 21 to 0,
-    )
+    /** Times of day the mentor reaches out (hour, minute): every hour, 6am–8pm. */
+    private val SLOTS: List<Pair<Int, Int>> = (6..20).map { it to 0 }
 
-    /** (Re)schedule all daily check-ins. Idempotent — safe to call on every launch. */
+    /**
+     * (Re)schedule every check-in for its next occurrence. Exact alarms don't repeat, so
+     * this is called on launch, on boot, and after each alarm fires — recomputing each
+     * slot's next future time (a slot whose time already passed today rolls to tomorrow).
+     * Idempotent: same request code per slot + FLAG_UPDATE_CURRENT just resets the alarm.
+     */
     fun schedule(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val zone = ZoneId.systemDefault()
         val now = System.currentTimeMillis()
+        val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
         SLOTS.forEachIndexed { i, (hour, minute) ->
-            var first = LocalDate.now().atTime(LocalTime.of(hour, minute))
+            var at = LocalDate.now().atTime(LocalTime.of(hour, minute))
                 .atZone(zone).toInstant().toEpochMilli()
-            if (first <= now) first += AlarmManager.INTERVAL_DAY
-            am.setInexactRepeating(
-                AlarmManager.RTC_WAKEUP, first, AlarmManager.INTERVAL_DAY, pendingIntent(context, i)
-            )
+            if (at <= now) at += AlarmManager.INTERVAL_DAY
+            val pi = pendingIntent(context, i)
+            runCatching {
+                if (canExact) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                } else {
+                    // Fall back to inexact repeating if exact alarms aren't permitted.
+                    am.setInexactRepeating(AlarmManager.RTC_WAKEUP, at, AlarmManager.INTERVAL_DAY, pi)
+                }
+            }
         }
     }
 
@@ -110,6 +124,8 @@ class MentorCheckinReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED -> MentorCheckin.schedule(context)
             else -> {
+                // Exact alarms are one-shot: re-arm all slots for their next occurrence.
+                MentorCheckin.schedule(context)
                 if (Mentor.apiKey(context) == null) return
                 if (MentorCheckin.tooSoon(context)) return
                 // Reserve this slot up-front so two alarms firing close together can't

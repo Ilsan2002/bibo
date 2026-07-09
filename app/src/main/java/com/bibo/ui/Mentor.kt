@@ -219,8 +219,9 @@ object Mentor {
             val db = BiboDb.get(context)
             val today = LocalDate.now().toEpochDay()
 
-            // If they've been chatting in the last 2h, a canned check-in feels robotic.
-            val cutoff = System.currentTimeMillis() - 2 * 60 * 60 * 1000
+            // Don't ping right after a live exchange; ~45 min lets the hourly cadence
+            // resume soon without talking over an active back-and-forth.
+            val cutoff = System.currentTimeMillis() - 45 * 60 * 1000
             if (db.chat().since(today).any { it.createdAt >= cutoff }) return@withLock null
 
             runCatching { compactPendingDays(context, client, today) }
