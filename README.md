@@ -32,9 +32,15 @@ voice logging, and a to-do list, all backed by local storage. Built for one user
 - **Goals** — long-term goals as colored folders of tasks; progress summary cards,
   colored dots on the calendar's date strip, and a daily goal-spotlight notification.
 - **Mentor** — a Claude-powered coach (Anthropic API, key stays on-device) that sees your
-  goals, focus sessions, habits, intake, and screen time. Continuous across days via
-  layered memory: raw chat (2 days) + model-written per-day digests + an evolving
-  memory-notes document rewritten at each day rollover.
+  goals, focus sessions, habits, intake, calendar, and screen time. Continuous across days
+  via layered memory: raw chat (2 days) + model-written per-day digests + an evolving
+  memory-notes document rewritten at each day rollover. **It can act**, not just talk —
+  create tasks (auto-broken into the smallest first steps and filed under the right goal),
+  create goals, add calendar events, and set goal-framed reminders — via Claude tool use.
+  It also **checks in on its own** each evening (9:30pm) grounded in the day's data.
+- **Goal profiles** — tap a goal to see its "why," a progress bar, target countdown, next
+  step, and every task/subtask with tap-to-complete.
+- **Two-pane on the Fold** — unfolded, the Calendar and Tasks tabs show both side by side.
 - **Homescreen widget** (Jetpack Glance) — today's agenda + one-tap timer start.
 - **Quick Settings tile** — toggle the activity timer from the shade.
 - **Polish** — semantic haptics throughout, themed splash screen, adaptive navigation
@@ -57,7 +63,7 @@ voice logging, and a to-do list, all backed by local storage. Built for one user
 - **Anthropic Java SDK** (`com.anthropic:anthropic-java`) for the Mentor chat —
   `claude-opus-4-8`, adaptive thinking; needs `packaging { resources { excludes } }`
   for its Apache-jar `META-INF` files on Android
-- Data layer: Room `bibo.db` (v9) — activity_blocks, todo_tasks, usage_sessions,
+- Data layer: Room `bibo.db` (v11) — activity_blocks, todo_tasks, usage_sessions,
   website_sessions, habit_days, food_entries, goals, chat_messages, chat_days;
   migrations preserve data across upgrades
 
