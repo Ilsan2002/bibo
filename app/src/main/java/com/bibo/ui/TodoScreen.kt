@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -74,6 +75,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -136,6 +138,9 @@ fun TodoScreen() {
     }
 
     val startOfToday = LocalDate.now().atStartOfDay(zone).toInstant().toEpochMilli()
+
+    // Parents whose subtasks are expanded (collapsed by default so big tasks stay tidy).
+    val expandedParents = remember { mutableStateSetOf<Long>() }
 
     val visible = tasks.filter { it.id !in pendingDelete.value }
     val children = visible.filter { it.parentId != null }.groupBy { it.parentId }
@@ -313,8 +318,10 @@ fun TodoScreen() {
                 }
 
                 items(ordered, key = { it.id }) { task ->
+                    val subs = children[task.id].orEmpty()
+                    val hasSubs = subs.isNotEmpty()
+                    val isExpanded = task.id in expandedParents
                     ReorderableItem(reorderState, key = task.id) { isDragging ->
-                        val subs = children[task.id].orEmpty()
                         SwipeableTaskRow(
                             task = task,
                             onComplete = { haptics.confirm(); setCompleted(task, true) },
@@ -326,7 +333,7 @@ fun TodoScreen() {
                                 dragging = isDragging,
                                 now = now,
                                 goalColor = task.goalId?.let { goalsById[it]?.color },
-                                subtaskProgress = if (subs.isNotEmpty()) {
+                                subtaskProgress = if (hasSubs) {
                                     subs.count { it.completedAt != null } to subs.size
                                 } else null,
                                 onToggleComplete = { done ->
@@ -348,10 +355,18 @@ fun TodoScreen() {
                                         ),
                                     )
                                 },
+                                expanded = isExpanded,
+                                onToggleExpand = if (hasSubs) {
+                                    {
+                                        haptics.tick()
+                                        if (isExpanded) expandedParents.remove(task.id)
+                                        else expandedParents.add(task.id)
+                                    }
+                                } else null,
                             )
                         }
                     }
-                    children[task.id]?.filter { it.completedAt == null }?.forEach { sub ->
+                    if (isExpanded) children[task.id]?.filter { it.completedAt == null }?.forEach { sub ->
                         // subtasks are not reorderable; still swipeable
                         SwipeableTaskRow(
                             task = sub,
@@ -615,6 +630,8 @@ private fun TaskRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     dragHandle: (@Composable () -> Unit)?,
+    expanded: Boolean = false,
+    onToggleExpand: (() -> Unit)? = null,
 ) {
     val completed = task.completedAt != null
     val running = task.startedAt != null
@@ -642,6 +659,17 @@ private fun TaskRow(
                 modifier = Modifier.size(18.dp),
                 tint = MaterialTheme.colorScheme.outline,
             )
+        }
+        // Expand/collapse chevron for parents that have subtasks.
+        if (onToggleExpand != null && subtaskProgress != null) {
+            IconButton(onClick = onToggleExpand, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    if (expanded) Icons.Filled.ExpandMore else Icons.Filled.ChevronRight,
+                    contentDescription = if (expanded) "Collapse subtasks" else "Expand subtasks",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(2.dp))
         }
         Checkbox(checked = completed, onCheckedChange = onToggleComplete)
         if (goalColor != null) {

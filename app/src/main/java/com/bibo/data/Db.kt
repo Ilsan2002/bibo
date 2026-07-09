@@ -88,6 +88,7 @@ data class Goal(
     val targetDate: Long? = null, // optional milestone, as an epoch-day
     val createdAt: Long,
     val archived: Boolean = false,
+    val details: String? = null, // the "why" + description shown on the goal profile
 )
 
 @Dao
@@ -157,6 +158,15 @@ interface TodoDao {
 
     @Query("SELECT title FROM todo_tasks WHERE dueEpochDay = :epochDay AND completedAt IS NULL")
     suspend fun dueTitlesOnDay(epochDay: Long): List<String>
+
+    @Query("SELECT * FROM todo_tasks WHERE completedAt IS NULL")
+    suspend fun incompleteOnce(): List<TodoTask>
+
+    @Query("SELECT * FROM todo_tasks WHERE goalId = :goalId ORDER BY sortOrder")
+    fun forGoal(goalId: Long): Flow<List<TodoTask>>
+
+    @Query("SELECT * FROM todo_tasks WHERE id = :id")
+    suspend fun byId(id: Long): TodoTask?
 }
 
 /**
@@ -430,12 +440,18 @@ private val MIGRATION_8_9 = object : Migration(8, 9) {
     }
 }
 
+private val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE goals ADD COLUMN details TEXT")
+    }
+}
+
 @Database(
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
         HabitDay::class, FoodEntry::class, Goal::class, ChatMessage::class, ChatDay::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -461,7 +477,7 @@ abstract class BiboDb : RoomDatabase() {
                     "bibo.db",
                 ).addMigrations(
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-                    MIGRATION_7_8, MIGRATION_8_9,
+                    MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                 )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }

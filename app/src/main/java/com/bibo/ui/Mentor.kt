@@ -4,9 +4,14 @@ import android.content.Context
 import com.anthropic.client.AnthropicClient
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
 import com.anthropic.errors.UnauthorizedException
+import com.anthropic.models.messages.ContentBlockParam
+import com.anthropic.models.messages.Message
 import com.anthropic.models.messages.MessageCreateParams
 import com.anthropic.models.messages.MessageParam
+import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.ThinkingConfigAdaptive
+import com.anthropic.models.messages.ToolResultBlockParam
+import com.anthropic.models.messages.ToolUseBlockParam
 import com.bibo.data.BiboDb
 import com.bibo.data.ChatDay
 import com.bibo.data.ChatMessage
@@ -46,6 +51,9 @@ object Mentor {
 
     /** Chat days older than this get a local digest instead of an LLM compaction. */
     private const val MAX_COMPACT_AGE_DAYS = 14
+
+    /** Safety cap on the tool-call loop so a misbehaving turn can't spin forever. */
+    private const val MAX_TOOL_ITERATIONS = 6
 
     private val sendLock = Mutex()
 
@@ -110,20 +118,50 @@ object Mentor {
             try {
                 val system = buildSystemPrompt(context, today)
                 val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
+                val messages = historyParams(history).toMutableList()
 
-                val builder = MessageCreateParams.builder()
-                    .model("claude-opus-4-8")
-                    .maxTokens(4096L)
-                    .thinking(ThinkingConfigAdaptive.builder().build())
-                    .system(system)
-                historyParams(history).forEach { builder.addMessage(it) }
+                // Agentic loop: the model may call tools (create task/goal/event, complete
+                // task) before its final text. Execute each against Room, feed results back,
+                // repeat until it stops calling tools.
+                var reply = "…"
+                var iterations = 0
+                while (iterations++ < MAX_TOOL_ITERATIONS) {
+                    val builder = MessageCreateParams.builder()
+                        .model("claude-opus-4-8")
+                        .maxTokens(4096L)
+                        .thinking(ThinkingConfigAdaptive.builder().build())
+                        .system(system)
+                    MentorTools.definitions().forEach { builder.addTool(it) }
+                    messages.forEach { builder.addMessage(it) }
 
-                val reply = client.messages().create(builder.build())
-                    .content()
-                    .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-                    .joinToString("\n")
-                    .trim()
-                    .ifBlank { "…" }
+                    val response = client.messages().create(builder.build())
+                    val toolUses = response.content().mapNotNull { it.toolUse().orElse(null) }
+
+                    if (toolUses.isEmpty()) {
+                        reply = responseText(response).ifBlank { "…" }
+                        break
+                    }
+
+                    // Echo the assistant turn (text + tool_use blocks) verbatim, then run
+                    // the tools and return their results as the next user turn.
+                    messages += MessageParam.builder()
+                        .role(MessageParam.Role.ASSISTANT)
+                        .contentOfBlockParams(assistantEcho(response))
+                        .build()
+
+                    val results = toolUses.map { tu ->
+                        val inputMap = runCatching { tu._input().convert(Map::class.java) as? Map<*, *> }
+                            .getOrNull() ?: emptyMap<Any, Any>()
+                        val result = MentorTools.execute(context, tu.name(), inputMap)
+                        ContentBlockParam.ofToolResult(
+                            ToolResultBlockParam.builder().toolUseId(tu.id()).content(result).build()
+                        )
+                    }
+                    messages += MessageParam.builder()
+                        .role(MessageParam.Role.USER)
+                        .contentOfBlockParams(results)
+                        .build()
+                }
 
                 db.chat().insert(
                     ChatMessage(
@@ -210,6 +248,35 @@ object Mentor {
      * trigger instruction was never persisted, or a takeLast cut) — prepend a neutral
      * user primer in that case.
      */
+    /** The plain-text portion of a response, joined across text blocks. */
+    private fun responseText(response: Message): String =
+        response.content()
+            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
+            .joinToString("\n")
+            .trim()
+
+    /**
+     * Rebuild the assistant turn (text + tool_use blocks) as params so it can be echoed
+     * back — the API requires the tool_use blocks to precede their tool_result blocks.
+     * Thinking blocks are dropped; they aren't required for the follow-up turn here.
+     */
+    private fun assistantEcho(response: Message): List<ContentBlockParam> =
+        response.content().mapNotNull { block ->
+            block.text().map { t ->
+                ContentBlockParam.ofText(TextBlockParam.builder().text(t.text()).build())
+            }.orElseGet {
+                block.toolUse().map { tu ->
+                    ContentBlockParam.ofToolUse(
+                        ToolUseBlockParam.builder()
+                            .id(tu.id())
+                            .name(tu.name())
+                            .input(tu._input().convert(ToolUseBlockParam.Input::class.java)!!)
+                            .build()
+                    )
+                }.orElse(null)
+            }
+        }
+
     private fun historyParams(history: List<ChatMessage>): List<MessageParam> {
         val params = mutableListOf<MessageParam>()
         if (history.firstOrNull()?.role == "ASSISTANT") {
@@ -356,6 +423,12 @@ object Mentor {
                 - Give specific, small, doable recommendations grounded in their actual numbers.
                 - When they reflect on their day, listen first and mirror what you heard, then
                   add one honest observation.
+                - You can ACT, not just talk. When it helps, use your tools to create tasks,
+                  goals, or calendar events, or to tick a task off. When they name a big or
+                  vague task, create it and break it into the smallest concrete first steps as
+                  subtasks — the point is to make an overwhelming goal feel doable — and file
+                  it under the goal it serves. Don't ask permission for obvious, reversible
+                  actions; just do it and tell them in one sentence what you set up.
                 - Texting style: warm, direct, 2-5 short sentences. No bullet lists or headings
                   unless asked. At most one question per message. Never lecture.
                 """.trimIndent()
