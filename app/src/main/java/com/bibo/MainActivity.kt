@@ -7,10 +7,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.BarChart
@@ -30,6 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import com.bibo.ui.CalendarScreen
 import com.bibo.ui.ChatScreen
 import com.bibo.ui.HealthScreen
@@ -41,6 +47,7 @@ import com.bibo.ui.theme.BiboTheme
 class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_OPEN_TAB = "open_tab"
+        const val TAB_TASKS = 3
         const val TAB_MENTOR = 5
     }
 
@@ -53,6 +60,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         com.bibo.data.GoalReminders.schedule(this)
         com.bibo.data.MentorCheckin.schedule(this)
+        com.bibo.data.TaskReminders.rescheduleAll(this)
         tabRequest.intValue = intent?.getIntExtra(EXTRA_OPEN_TAB, -1) ?: -1
         setContent {
             BiboTheme {
@@ -107,18 +115,29 @@ fun BiboApp(tabRequest: MutableIntState? = null) {
             }
         },
     ) {
-        Box(
+        BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.statusBars)
         ) {
-            when (selected) {
-                0 -> CalendarScreen()
-                1 -> StatsScreen()
-                2 -> TimerScreen()
-                3 -> TodoScreen()
-                4 -> HealthScreen()
-                5 -> ChatScreen()
+            // Unfolded (wide) screen: show Calendar and Tasks together as a two-pane
+            // when either of those tabs is selected. Folded stays single-pane.
+            val twoPane = maxWidth >= 720.dp && (selected == 0 || selected == 3)
+            if (twoPane) {
+                Row(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f).fillMaxHeight()) { CalendarScreen() }
+                    VerticalDivider()
+                    Box(Modifier.weight(1f).fillMaxHeight()) { TodoScreen() }
+                }
+            } else {
+                when (selected) {
+                    0 -> CalendarScreen()
+                    1 -> StatsScreen()
+                    2 -> TimerScreen()
+                    3 -> TodoScreen()
+                    4 -> HealthScreen()
+                    5 -> ChatScreen()
+                }
             }
         }
     }

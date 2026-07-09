@@ -125,6 +125,7 @@ fun TodoScreen() {
     var filterGoalId by remember { mutableStateOf<Long?>(null) }
     var showGoalEditor by remember { mutableStateOf(false) }
     var editGoal by remember { mutableStateOf<Goal?>(null) }
+    var profileGoal by remember { mutableStateOf<Goal?>(null) }
     // ids whose delete is pending an undo window — filtered out of the UI meanwhile
     val pendingDelete = remember { mutableStateOf(setOf<Long>()) }
 
@@ -302,7 +303,7 @@ fun TodoScreen() {
                         selected = filterGoalId,
                         onSelect = { filterGoalId = if (filterGoalId == it) null else it },
                         onNewGoal = { editGoal = null; showGoalEditor = true },
-                        onEditGoal = { editGoal = it; showGoalEditor = true },
+                        onOpenProfile = { profileGoal = it },
                     )
                 }
 
@@ -496,21 +497,39 @@ fun TodoScreen() {
         )
     }
 
+    // Full-screen goal profile overlay (tap a goal card). Re-derive the live goal so
+    // edits reflect immediately; close if the goal was deleted.
+    profileGoal?.let { pg ->
+        val live = goals.find { it.id == pg.id }
+        if (live == null) {
+            LaunchedEffect(pg.id) { profileGoal = null }
+        } else {
+            GoalProfileScreen(
+                goal = live,
+                onBack = { profileGoal = null },
+                onEdit = { editGoal = live; showGoalEditor = true },
+            )
+        }
+    }
+
     if (showGoalEditor) {
         GoalEditorSheet(
             goal = editGoal,
             onDismiss = { showGoalEditor = false },
-            onSave = { name, color, targetDay ->
+            onSave = { name, color, targetDay, details ->
                 showGoalEditor = false
                 haptics.confirm()
                 val existing = editGoal
                 scope.launch(Dispatchers.IO) {
                     if (existing == null) {
                         db.goals().insert(
-                            Goal(name = name, color = color, targetDate = targetDay, createdAt = System.currentTimeMillis())
+                            Goal(
+                                name = name, color = color, targetDate = targetDay,
+                                createdAt = System.currentTimeMillis(), details = details,
+                            )
                         )
                     } else {
-                        db.goals().update(existing.copy(name = name, color = color, targetDate = targetDay))
+                        db.goals().update(existing.copy(name = name, color = color, targetDate = targetDay, details = details))
                     }
                 }
             },
@@ -826,7 +845,7 @@ private fun GoalSummaryRow(
     selected: Long?,
     onSelect: (Long) -> Unit,
     onNewGoal: () -> Unit,
-    onEditGoal: (Goal) -> Unit,
+    onOpenProfile: (Goal) -> Unit,
 ) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
@@ -846,8 +865,8 @@ private fun GoalSummaryRow(
                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                     )
                     .combinedClickable(
-                        onClick = { onSelect(g.id) },
-                        onLongClick = { onEditGoal(g) },
+                        onClick = { onOpenProfile(g) },
+                        onLongClick = { onSelect(g.id) },
                     )
                     .padding(12.dp),
             ) {
@@ -904,11 +923,12 @@ private val GOAL_COLORS = listOf(
 private fun GoalEditorSheet(
     goal: Goal?,
     onDismiss: () -> Unit,
-    onSave: (String, Int, Long?) -> Unit,
+    onSave: (String, Int, Long?, String?) -> Unit,
     onDelete: (() -> Unit)?,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var name by remember { mutableStateOf(goal?.name ?: "") }
+    var details by remember { mutableStateOf(goal?.details ?: "") }
     var color by remember { mutableStateOf(goal?.color ?: GOAL_COLORS.first()) }
     var targetDay by remember { mutableStateOf(goal?.targetDate) }
     var pickDate by remember { mutableStateOf(false) }
@@ -927,6 +947,14 @@ private fun GoalEditorSheet(
                 onValueChange = { name = it },
                 label = { Text("Goal name") },
                 singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = details,
+                onValueChange = { details = it },
+                label = { Text("Why it matters / details") },
+                minLines = 2,
+                maxLines = 4,
                 modifier = Modifier.fillMaxWidth(),
             )
             Text("Color", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -968,7 +996,7 @@ private fun GoalEditorSheet(
                     }
                 }
                 Button(
-                    onClick = { onSave(name.trim(), color, targetDay) },
+                    onClick = { onSave(name.trim(), color, targetDay, details.trim().ifBlank { null }) },
                     enabled = name.isNotBlank(),
                     modifier = Modifier.weight(1f),
                 ) { Text("Save") }

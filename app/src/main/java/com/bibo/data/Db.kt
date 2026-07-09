@@ -77,6 +77,8 @@ data class TodoTask(
     val sortOrder: Long = 0, // manual drag-reorder position; defaults to createdAt
     val goalId: Long? = null, // the long-term goal this task belongs to
     val dueEpochDay: Long? = null, // optional due date, drives the calendar dot
+    val reminderAt: Long? = null, // when to fire a reminder notification (epoch millis)
+    val reminderNote: String? = null, // motivational framing tying the step to the goal
 )
 
 /** A long-term goal — a colored folder that groups tasks and shows on the calendar. */
@@ -167,6 +169,9 @@ interface TodoDao {
 
     @Query("SELECT * FROM todo_tasks WHERE id = :id")
     suspend fun byId(id: Long): TodoTask?
+
+    @Query("SELECT * FROM todo_tasks WHERE reminderAt IS NOT NULL AND completedAt IS NULL")
+    suspend fun withReminders(): List<TodoTask>
 }
 
 /**
@@ -446,12 +451,19 @@ private val MIGRATION_9_10 = object : Migration(9, 10) {
     }
 }
 
+private val MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE todo_tasks ADD COLUMN reminderAt INTEGER")
+        db.execSQL("ALTER TABLE todo_tasks ADD COLUMN reminderNote TEXT")
+    }
+}
+
 @Database(
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
         HabitDay::class, FoodEntry::class, Goal::class, ChatMessage::class, ChatDay::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -477,7 +489,7 @@ abstract class BiboDb : RoomDatabase() {
                     "bibo.db",
                 ).addMigrations(
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-                    MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
+                    MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
                 )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }

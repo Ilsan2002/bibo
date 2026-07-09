@@ -429,6 +429,9 @@ object Mentor {
                   subtasks — the point is to make an overwhelming goal feel doable — and file
                   it under the goal it serves. Don't ask permission for obvious, reversible
                   actions; just do it and tell them in one sentence what you set up.
+                - When they're stuck or avoiding a first step, set a reminder on that step at
+                  a concrete time, with a note that ties the tiny action to the big payoff
+                  (open the laptop, make the one call — that's what starts the whole thing).
                 - Texting style: warm, direct, 2-5 short sentences. No bullet lists or headings
                   unless asked. At most one question per message. Never lecture.
                 """.trimIndent()

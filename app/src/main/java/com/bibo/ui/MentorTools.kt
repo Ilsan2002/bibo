@@ -7,8 +7,10 @@ import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
 import com.bibo.data.DeviceCalendarRepo
 import com.bibo.data.Goal
+import com.bibo.data.TaskReminders
 import com.bibo.data.TodoTask
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -56,6 +58,15 @@ object MentorTools {
                             )
                             .putAdditionalProperty("goal", strProp("Name of an existing goal to file this under (optional)"))
                             .putAdditionalProperty("due_date", strProp("Due date as YYYY-MM-DD (optional)"))
+                            .putAdditionalProperty("reminder", strProp("When to nudge them, as 'YYYY-MM-DD HH:mm' 24h (optional)"))
+                            .putAdditionalProperty(
+                                "reminder_note",
+                                strProp(
+                                    "One motivating line for the reminder that ties this small step to the " +
+                                        "bigger goal (e.g. 'Open the laptop and make the first call — this is " +
+                                        "what kicks off your first client'). Required if reminder is set."
+                                )
+                            )
                             .build()
                     )
                     .required(listOf("title"))
@@ -145,20 +156,34 @@ object MentorTools {
         val goal = matchGoal(db.goals().allOnce(), str(input, "goal"))
         val due = day(input, "due_date")
         val now = System.currentTimeMillis()
+        val reminderAt = str(input, "reminder")?.let {
+            runCatching {
+                LocalDateTime.parse(it, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            }.getOrNull()
+        }
+        val reminderNote = str(input, "reminder_note")
 
         val parentId = db.todos().insert(
-            TodoTask(title = title, createdAt = now, sortOrder = now, goalId = goal?.id, dueEpochDay = due)
+            TodoTask(
+                title = title, createdAt = now, sortOrder = now, goalId = goal?.id, dueEpochDay = due,
+                reminderAt = reminderAt, reminderNote = reminderNote,
+            )
         )
         subtasks.forEachIndexed { i, s ->
             db.todos().insert(
                 TodoTask(title = s, parentId = parentId, createdAt = now + i + 1, sortOrder = (i + 1).toLong(), goalId = goal?.id)
             )
         }
+        reminderAt?.let { TaskReminders.schedule(context, parentId, it) }
         return buildString {
             append("Created \"$title\"")
             if (subtasks.isNotEmpty()) append(" with ${subtasks.size} step${if (subtasks.size > 1) "s" else ""}")
             goal?.let { append(" under goal \"${it.name}\"") }
             due?.let { append(", due ${LocalDate.ofEpochDay(it).format(DateTimeFormatter.ofPattern("EEE MMM d"))}") }
+            reminderAt?.let {
+                append(", reminder set for ${LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(it), ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("EEE MMM d HH:mm"))}")
+            }
             append(".")
         }
     }
