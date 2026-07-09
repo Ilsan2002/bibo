@@ -120,6 +120,27 @@ object MentorTools {
                     .build()
             )
             .build(),
+        Tool.builder()
+            .name("remember")
+            .description(
+                "Save one durable fact to your long-term memory so you keep it across days. " +
+                    "Use it whenever something worth carrying forward surfaces — a decision or " +
+                    "change of direction, a project or goal detail, a milestone or progress " +
+                    "update, a preference, a deadline, or a commitment — whether it comes from " +
+                    "what they say, or from what you see in their tasks and calendar. Save " +
+                    "quietly; don't announce every save. Keep each fact to one concise sentence."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("fact", strProp("The single fact to remember, one concise sentence"))
+                            .build()
+                    )
+                    .required(listOf("fact"))
+                    .build()
+            )
+            .build(),
     )
 
     /** Dispatch a tool call. Returns a short result string fed back to the model. */
@@ -130,6 +151,7 @@ object MentorTools {
                 "create_goal" -> createGoal(context, input)
                 "add_calendar_event" -> addEvent(context, input)
                 "complete_task" -> completeTask(context, input)
+                "remember" -> remember(context, input)
                 else -> "Unknown tool: $name"
             }
         } catch (e: Throwable) {
@@ -229,6 +251,12 @@ object MentorTools {
             )
             "Added \"$title\" to your Bibo calendar, $when0."
         }
+    }
+
+    private fun remember(context: Context, input: Map<*, *>): String {
+        val fact = str(input, "fact") ?: return "Nothing to remember."
+        Mentor.appendMemory(context, fact)
+        return "Saved to memory."
     }
 
     private suspend fun completeTask(context: Context, input: Map<*, *>): String {

@@ -55,6 +55,9 @@ object Mentor {
     /** Safety cap on the tool-call loop so a misbehaving turn can't spin forever. */
     private const val MAX_TOOL_ITERATIONS = 6
 
+    /** Intraday memory grows by append; nightly compaction consolidates. Cap the lines. */
+    private const val MAX_MEMORY_LINES = 60
+
     private val sendLock = Mutex()
 
     @Volatile
@@ -78,6 +81,22 @@ object Mentor {
 
     private fun setMemory(context: Context, value: String) {
         prefs(context).edit().putString(KEY_MEMORY, value.trim()).apply()
+    }
+
+    /**
+     * Append one durable fact to the memory notes right now (mid-conversation), so
+     * progress and project/goal facts are saved the moment they surface rather than
+     * waiting for the nightly consolidation. Kept bounded by line count; the daily
+     * compaction rewrites and de-dupes the whole document.
+     */
+    fun appendMemory(context: Context, fact: String) {
+        val clean = fact.trim().removePrefix("-").trim()
+        if (clean.isBlank()) return
+        val current = memory(context)
+        if (current.contains(clean, ignoreCase = true)) return // already known
+        val merged = (if (current.isBlank()) "- $clean" else "$current\n- $clean").lines()
+        val trimmed = if (merged.size > MAX_MEMORY_LINES) merged.takeLast(MAX_MEMORY_LINES) else merged
+        setMemory(context, trimmed.joinToString("\n"))
     }
 
     private fun client(context: Context): AnthropicClient? {
@@ -432,6 +451,13 @@ object Mentor {
                 - When they're stuck or avoiding a first step, set a reminder on that step at
                   a concrete time, with a note that ties the tiny action to the big payoff
                   (open the laptop, make the one call — that's what starts the whole thing).
+                - Keep a memory. Use the remember tool to save anything worth carrying across
+                  days — a decision or change of direction, a project/goal detail, a deadline,
+                  a milestone or progress update, a preference, a commitment — whether it comes
+                  from what they tell you OR from what you notice in their tasks and calendar
+                  below (a goal's steps getting done, an event that happened). Save these
+                  quietly as they come up; your MEMORY NOTES are what you'll still know weeks
+                  from now, so a fact that isn't re-derivable from the live data belongs there.
                 - Texting style: warm, direct, 2-5 short sentences. No bullet lists or headings
                   unless asked. At most one question per message. Never lecture.
                 """.trimIndent()
