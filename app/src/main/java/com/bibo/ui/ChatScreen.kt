@@ -22,6 +22,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.AlertDialog
@@ -67,6 +68,7 @@ fun ChatScreen() {
 
     var hasKey by remember { mutableStateOf(Mentor.apiKey(context) != null) }
     var showKeyDialog by remember { mutableStateOf(false) }
+    var showMemory by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
 
@@ -102,6 +104,11 @@ fun ChatScreen() {
         ) {
             Text("Mentor", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
+            if (hasKey) {
+                IconButton(onClick = { showMemory = true }) {
+                    Icon(Icons.Filled.Bookmarks, contentDescription = "What the mentor remembers")
+                }
+            }
             IconButton(onClick = { showKeyDialog = true }) {
                 Icon(Icons.Filled.Key, contentDescription = "API key")
             }
@@ -215,6 +222,46 @@ fun ChatScreen() {
             },
         )
     }
+
+    if (showMemory) {
+        MemoryDialog(
+            initial = Mentor.memory(context),
+            onDismiss = { showMemory = false },
+            onSave = { text ->
+                Mentor.saveMemory(context, text)
+                showMemory = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun MemoryDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("What your mentor remembers") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Durable facts your mentor carries across days. Edit or delete anything — " +
+                        "it's rewritten and tidied each night.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("Nothing saved yet — facts appear here as you talk.") },
+                    minLines = 6,
+                    maxLines = 16,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 private sealed interface ChatRow {

@@ -83,6 +83,9 @@ object Mentor {
         prefs(context).edit().putString(KEY_MEMORY, value.trim()).apply()
     }
 
+    /** User-facing edit of the memory notes (from the Mentor tab's Memory view). */
+    fun saveMemory(context: Context, value: String) = setMemory(context, value)
+
     /**
      * Append one durable fact to the memory notes right now (mid-conversation), so
      * progress and project/goal facts are saved the moment they surface rather than
