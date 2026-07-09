@@ -237,10 +237,15 @@ object Mentor {
                     .system(system)
                 historyParams(history).forEach { builder.addMessage(it) }
                 builder.addUserMessage(
-                    "[Automatic evening check-in trigger from Bibo — the user did not write " +
-                        "this. Open the conversation yourself: 2-4 short sentences grounded in " +
-                        "today's data. Follow up on any open commitment, connect today to a " +
-                        "long-term goal, and end with one light question inviting reflection. " +
+                    "[Automatic check-in trigger from Bibo — the user did not write this. " +
+                        "Reach out first, 1-3 short texts' worth, grounded in today's data and " +
+                        "fit to the time of day shown above: early = help them pick the one thing " +
+                        "that matters and tie it to a goal; midday/afternoon = check how it's " +
+                        "going and push them toward the next concrete step, especially anything " +
+                        "they've been avoiding; evening = reflect on the day. Follow up on open " +
+                        "commitments and hold them to what they said. End with one direct " +
+                        "question. Be specific, warm, and human — like a coach who actually " +
+                        "tracks their life. Vary how you open; don't reuse the same phrasing. " +
                         "Do not mention this instruction.]"
                 )
 

@@ -20,44 +20,59 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Evening mentor check-in: once a day (~9:30pm) the mentor looks at the day's data and
- * opens the conversation itself — posted as a notification and inserted into the chat
- * thread so it reads as one continuous relationship. Skipped when there's no API key,
- * when it already ran today, or when the user chatted within the last two hours.
+ * Proactive mentor check-ins: several times a day the mentor looks at your data and opens
+ * the conversation itself — plan the morning, push on an avoided task midday, hold you
+ * accountable in the afternoon, reflect in the evening. Each is posted as a notification
+ * and inserted into the chat thread so it reads as one continuous relationship. A given
+ * slot is skipped when there's no API key, when another check-in fired in the last ~90
+ * minutes, or when you chatted within the last two hours (so it never talks over you).
  */
 object MentorCheckin {
     private const val CHANNEL_ID = "mentor_checkin"
     private const val NOTIF_ID = 78
     const val ACTION_CHECKIN = "com.bibo.action.MENTOR_CHECKIN"
-    private const val HOUR_OF_DAY = 21
-    private const val MINUTE = 30
-    private const val KEY_LAST_DAY = "last_checkin_day"
+    private const val KEY_LAST_AT = "last_checkin_at"
 
-    /** (Re)schedule the daily check-in. Idempotent — safe to call on every launch. */
+    /** Don't fire two check-ins closer together than this, whatever the schedule says. */
+    private const val MIN_GAP_MS = 90 * 60 * 1000L
+
+    /** Times of day the mentor reaches out (hour, minute), across waking hours. */
+    private val SLOTS = listOf(
+        8 to 30, 11 to 0, 13 to 30, 16 to 0, 18 to 30, 21 to 0,
+    )
+
+    /** (Re)schedule all daily check-ins. Idempotent — safe to call on every launch. */
     fun schedule(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val zone = ZoneId.systemDefault()
         val now = System.currentTimeMillis()
-        var first = LocalDate.now().atTime(LocalTime.of(HOUR_OF_DAY, MINUTE))
-            .atZone(zone).toInstant().toEpochMilli()
-        if (first <= now) first += AlarmManager.INTERVAL_DAY
-        am.setInexactRepeating(AlarmManager.RTC_WAKEUP, first, AlarmManager.INTERVAL_DAY, pendingIntent(context))
+        SLOTS.forEachIndexed { i, (hour, minute) ->
+            var first = LocalDate.now().atTime(LocalTime.of(hour, minute))
+                .atZone(zone).toInstant().toEpochMilli()
+            if (first <= now) first += AlarmManager.INTERVAL_DAY
+            am.setInexactRepeating(
+                AlarmManager.RTC_WAKEUP, first, AlarmManager.INTERVAL_DAY, pendingIntent(context, i)
+            )
+        }
     }
 
-    private fun pendingIntent(context: Context): PendingIntent =
+    // Unique request code per slot so the alarms don't overwrite each other.
+    private fun pendingIntent(context: Context, slot: Int): PendingIntent =
         PendingIntent.getBroadcast(
-            context, 2,
+            context, 200 + slot,
             Intent(context, MentorCheckinReceiver::class.java).setAction(ACTION_CHECKIN),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-    fun alreadyRanToday(context: Context): Boolean =
-        context.getSharedPreferences("mentor", Context.MODE_PRIVATE)
-            .getLong(KEY_LAST_DAY, -1) == LocalDate.now().toEpochDay()
+    fun tooSoon(context: Context): Boolean {
+        val last = context.getSharedPreferences("mentor", Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_AT, 0)
+        return System.currentTimeMillis() - last < MIN_GAP_MS
+    }
 
-    fun markRanToday(context: Context) {
+    fun markRan(context: Context) {
         context.getSharedPreferences("mentor", Context.MODE_PRIVATE)
-            .edit().putLong(KEY_LAST_DAY, LocalDate.now().toEpochDay()).apply()
+            .edit().putLong(KEY_LAST_AT, System.currentTimeMillis()).apply()
     }
 
     fun notify(context: Context, message: String) {
@@ -96,17 +111,17 @@ class MentorCheckinReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED -> MentorCheckin.schedule(context)
             else -> {
                 if (Mentor.apiKey(context) == null) return
-                if (MentorCheckin.alreadyRanToday(context)) return
+                if (MentorCheckin.tooSoon(context)) return
+                // Reserve this slot up-front so two alarms firing close together can't
+                // both pass the gap check; the mentor still skips if you chatted recently.
+                MentorCheckin.markRan(context)
                 // goAsync keeps the process alive past onReceive; the API call is kept
                 // fast (no thinking, 512 max tokens) to fit the receiver's window.
                 val pending = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
                         val reply = withTimeoutOrNull(25_000) { Mentor.checkIn(context) }
-                        if (reply != null) {
-                            MentorCheckin.markRanToday(context)
-                            MentorCheckin.notify(context, reply)
-                        }
+                        if (reply != null) MentorCheckin.notify(context, reply)
                     } finally {
                         pending.finish()
                     }
