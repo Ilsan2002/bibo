@@ -73,6 +73,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
@@ -95,6 +96,7 @@ import androidx.compose.ui.unit.dp
 import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
 import com.bibo.data.Goal
+import com.bibo.data.Rewards
 import com.bibo.data.TimerController
 import com.bibo.data.TodoTask
 import java.time.LocalDate
@@ -127,6 +129,12 @@ fun TodoScreen() {
     var showGoalEditor by remember { mutableStateOf(false) }
     var editGoal by remember { mutableStateOf<Goal?>(null) }
     var profileGoal by remember { mutableStateOf<Goal?>(null) }
+    var showTreats by remember { mutableStateOf(false) }
+    // Treat money earned this week — recomputed whenever tasks change (e.g. one completed).
+    var earnedThisWeek by remember { mutableIntStateOf(0) }
+    LaunchedEffect(tasks) {
+        earnedThisWeek = withContext(Dispatchers.IO) { Rewards.earnedCents(context) }
+    }
     // ids whose delete is pending an undo window — filtered out of the UI meanwhile
     val pendingDelete = remember { mutableStateOf(setOf<Long>()) }
 
@@ -289,12 +297,23 @@ fun TodoScreen() {
                 contentPadding = PaddingValues(bottom = 96.dp),
             ) {
                 item(key = "goals") {
-                    Text(
-                        "Tasks",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 8.dp),
-                    )
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Tasks",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AssistChip(
+                            onClick = { showTreats = true },
+                            label = { Text("💰 ${Rewards.format(earnedThisWeek)}") },
+                        )
+                    }
                     GoalSummaryRow(
                         goals = goals,
                         tasks = allParents,
@@ -508,6 +527,10 @@ fun TodoScreen() {
                 onEdit = { editGoal = live; showGoalEditor = true },
             )
         }
+    }
+
+    if (showTreats) {
+        TreatsSheet(onDismiss = { showTreats = false })
     }
 
     if (showGoalEditor) {

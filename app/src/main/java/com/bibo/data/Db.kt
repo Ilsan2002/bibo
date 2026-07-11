@@ -79,7 +79,39 @@ data class TodoTask(
     val dueEpochDay: Long? = null, // optional due date, drives the calendar dot
     val reminderAt: Long? = null, // when to fire a reminder notification (epoch millis)
     val reminderNote: String? = null, // motivational framing tying the step to the goal
+    val rewardCents: Int = 0, // treat money earned when this task is completed
 )
+
+/** A "хотелка" — something the user wants, funded by earning treat money from tasks. */
+@Entity(tableName = "wishlist_items")
+data class WishlistItem(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val priceCents: Int,
+    val createdAt: Long,
+    val redeemedAt: Long? = null, // set when the user treats themselves to it
+)
+
+@Dao
+interface WishlistDao {
+    @Insert
+    suspend fun insert(item: WishlistItem): Long
+
+    @Update
+    suspend fun update(item: WishlistItem)
+
+    @Delete
+    suspend fun delete(item: WishlistItem)
+
+    @Query("SELECT * FROM wishlist_items ORDER BY redeemedAt IS NOT NULL, priceCents")
+    fun all(): Flow<List<WishlistItem>>
+
+    @Query("SELECT * FROM wishlist_items ORDER BY redeemedAt IS NOT NULL, priceCents")
+    suspend fun allOnce(): List<WishlistItem>
+
+    @Query("SELECT COALESCE(SUM(priceCents),0) FROM wishlist_items WHERE redeemedAt >= :since")
+    suspend fun redeemedCentsSince(since: Long): Int
+}
 
 /** A long-term goal — a colored folder that groups tasks and shows on the calendar. */
 @Entity(tableName = "goals")
@@ -172,6 +204,12 @@ interface TodoDao {
 
     @Query("SELECT * FROM todo_tasks WHERE reminderAt IS NOT NULL AND completedAt IS NULL")
     suspend fun withReminders(): List<TodoTask>
+
+    @Query("SELECT COALESCE(SUM(rewardCents),0) FROM todo_tasks WHERE completedAt >= :since")
+    suspend fun earnedCentsSince(since: Long): Int
+
+    @Query("SELECT COALESCE(SUM(rewardCents),0) FROM todo_tasks WHERE completedAt >= :since")
+    fun earnedCentsSinceFlow(since: Long): Flow<Int>
 }
 
 /**
@@ -458,12 +496,24 @@ private val MIGRATION_10_11 = object : Migration(10, 11) {
     }
 }
 
+private val MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE todo_tasks ADD COLUMN rewardCents INTEGER NOT NULL DEFAULT 0")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS wishlist_items (" +
+                "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, " +
+                "priceCents INTEGER NOT NULL, createdAt INTEGER NOT NULL, redeemedAt INTEGER)"
+        )
+    }
+}
+
 @Database(
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
         HabitDay::class, FoodEntry::class, Goal::class, ChatMessage::class, ChatDay::class,
+        WishlistItem::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false,
 )
 abstract class BiboDb : RoomDatabase() {
@@ -476,6 +526,7 @@ abstract class BiboDb : RoomDatabase() {
     abstract fun goals(): GoalDao
     abstract fun chat(): ChatDao
     abstract fun chatDays(): ChatDayDao
+    abstract fun wishlist(): WishlistDao
 
     companion object {
         @Volatile
@@ -489,7 +540,7 @@ abstract class BiboDb : RoomDatabase() {
                     "bibo.db",
                 ).addMigrations(
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-                    MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
+                    MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
                 )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also { instance = it }

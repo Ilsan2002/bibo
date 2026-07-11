@@ -67,6 +67,16 @@ object MentorTools {
                                         "what kicks off your first client'). Required if reminder is set."
                                 )
                             )
+                            .putAdditionalProperty(
+                                "reward_dollars",
+                                JsonValue.from(
+                                    mapOf(
+                                        "type" to "number",
+                                        "description" to "Treat-money reward for finishing, by difficulty: ~1 " +
+                                            "for a quick task, 3 medium, 5 hard, 10 for a big one (optional).",
+                                    )
+                                )
+                            )
                             .build()
                     )
                     .required(listOf("title"))
@@ -185,11 +195,13 @@ object MentorTools {
             }.getOrNull()
         }
         val reminderNote = str(input, "reminder_note")
+        val rewardCents = (input["reward_dollars"] as? Number)?.let { (it.toDouble() * 100).toInt() }
+            ?.coerceIn(0, 10000) ?: 0
 
         val parentId = db.todos().insert(
             TodoTask(
                 title = title, createdAt = now, sortOrder = now, goalId = goal?.id, dueEpochDay = due,
-                reminderAt = reminderAt, reminderNote = reminderNote,
+                reminderAt = reminderAt, reminderNote = reminderNote, rewardCents = rewardCents,
             )
         )
         subtasks.forEachIndexed { i, s ->
