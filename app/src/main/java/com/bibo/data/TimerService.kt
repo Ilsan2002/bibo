@@ -187,6 +187,11 @@ class TimerService : Service() {
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setContentIntent(openApp)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
+                // Android 16 "Live Update": promote to a live status-bar chip + prominent
+                // lock-screen / always-on-display card that updates in real time. Below
+                // Android 16 these are no-ops. Short chip label = the session title.
+                .setRequestPromotedOngoing(true)
+                .setShortCriticalText(displayTitle.take(20).ifBlank { "Timer" })
             if (comment.isNotBlank()) {
                 builder.setStyle(NotificationCompat.BigTextStyle().bigText(comment))
             }
