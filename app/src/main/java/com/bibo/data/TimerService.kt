@@ -188,8 +188,10 @@ class TimerService : Service() {
                 .setContentIntent(openApp)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
                 // Android 16 "Live Update": promote to a live status-bar chip + prominent
-                // lock-screen / always-on-display card that updates in real time. Below
-                // Android 16 these are no-ops. Short chip label = the session title.
+                // lock-screen / always-on-display / Samsung Now Bar item that updates in
+                // real time. Promotable notifications must be colorized. No-op < Android 16.
+                .setColorized(true)
+                .setColor(0xFF5B9DFF.toInt())
                 .setRequestPromotedOngoing(true)
                 .setShortCriticalText(displayTitle.take(20).ifBlank { "Timer" })
             if (comment.isNotBlank()) {
