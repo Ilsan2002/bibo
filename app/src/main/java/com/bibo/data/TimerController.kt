@@ -37,6 +37,7 @@ object TimerController {
     private const val KEY_PHASE = "phase" // WORK / BREAK
     private const val KEY_PHASE_END = "phase_end"
     private const val KEY_POMOS = "pomos_done"
+    private const val KEY_TASK_ID = "task_id" // set when this timer is a to-do task's timer
 
     const val PHASE_WORK = "WORK"
     const val PHASE_BREAK = "BREAK"
@@ -54,6 +55,10 @@ object TimerController {
         prefs(context).getString(KEY_BLOCKED, "").orEmpty()
             .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
+    /** The to-do task this timer is timing, if any (play pressed from the Tasks list). */
+    fun linkedTaskId(context: Context): Long? =
+        prefs(context).getLong(KEY_TASK_ID, -1L).takeIf { it > 0 }
+
     fun isPomodoro(context: Context): Boolean = prefs(context).getBoolean(KEY_POMO, false)
     fun workMin(context: Context): Int = prefs(context).getInt(KEY_WORK, 25)
     fun breakMin(context: Context): Int = prefs(context).getInt(KEY_BREAK, 5)
@@ -65,6 +70,7 @@ object TimerController {
 
     /** Start a plain quick timer (Quick Settings tile / widget). */
     fun startTimer(context: Context, title: String) {
+        if (isRunning(context)) stopTimer(context) // close out whatever was running first
         prefs(context).edit().clear()
             .putLong(KEY_START, System.currentTimeMillis())
             .putString(KEY_TITLE, title)
@@ -73,8 +79,33 @@ object TimerController {
         TimerService.start(context)
     }
 
+    /**
+     * Start (or switch to) timing a specific to-do task. This is the same shared timer the
+     * Focus page shows, so pressing play in the Tasks list makes the session appear there
+     * (and in the notification / widget) too. Also stamps the task's startedAt so its row
+     * shows a live elapsed time.
+     */
+    fun startTask(context: Context, taskId: Long, title: String, goalId: Long?) {
+        if (isRunning(context)) stopTimer(context) // close out whatever was running first
+        val now = System.currentTimeMillis()
+        prefs(context).edit().clear()
+            .putLong(KEY_START, now)
+            .putString(KEY_TITLE, title.ifBlank { "Task" })
+            .putBoolean(KEY_FOCUS, false)
+            .putLong(KEY_GOAL, goalId ?: -1L)
+            .putLong(KEY_TASK_ID, taskId)
+            .apply()
+        TimerService.start(context)
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            val db = BiboDb.get(appContext)
+            db.todos().byId(taskId)?.let { db.todos().update(it.copy(startedAt = now)) }
+        }
+    }
+
     /** Start a full focus session with its blocking, DND, and Pomodoro settings. */
     fun startFocus(context: Context, config: FocusConfig) {
+        if (isRunning(context)) stopTimer(context) // close out whatever was running first
         val now = System.currentTimeMillis()
         prefs(context).edit().clear()
             .putLong(KEY_START, now)
@@ -121,6 +152,7 @@ object TimerController {
         val title = runningTitle(context).ifBlank { "Untitled activity" }
         val focus = isFocus(context)
         val goal = goalId(context)
+        val taskId = linkedTaskId(context)
         val hadDnd = p.getBoolean(KEY_DND, false)
         p.edit().clear().apply()
 
@@ -129,21 +161,49 @@ object TimerController {
 
         val appContext = context.applicationContext
         val end = System.currentTimeMillis()
+        // A task's timer saves a TODO block (so it lands on the calendar like a completed
+        // task) carrying the task's goal; a plain timer / focus session keeps its own kind.
+        val source = when {
+            taskId != null -> "TODO"
+            focus -> "FOCUS"
+            else -> "TIMER"
+        }
         val block = if (start > 0L && end - start >= 10_000L) {
             ActivityBlock(
                 title = title,
                 startMillis = start,
                 endMillis = end,
-                source = if (focus) "FOCUS" else "TIMER",
+                source = source,
                 note = reflection?.trim()?.ifBlank { null },
-                goalId = if (focus) goal else null,
+                goalId = if (taskId != null || focus) goal else null,
             )
         } else {
             null
         }
         CoroutineScope(Dispatchers.IO).launch {
-            if (block != null) BiboDb.get(appContext).activityBlocks().insert(block)
+            val db = BiboDb.get(appContext)
+            if (block != null) db.activityBlocks().insert(block)
+            // Stop the linked task's row spinner too (pausing from either screen).
+            if (taskId != null) {
+                db.todos().byId(taskId)?.let {
+                    if (it.startedAt != null) db.todos().update(it.copy(startedAt = null))
+                }
+            }
             runCatching { BiboWidget().updateAll(appContext) }
         }
+    }
+
+    /**
+     * Tear the running timer down WITHOUT writing a block — for when the caller persists
+     * the activity itself (e.g. completing a task writes its own TODO block).
+     */
+    fun clear(context: Context) {
+        val p = prefs(context)
+        val hadDnd = p.getBoolean(KEY_DND, false)
+        p.edit().clear().apply()
+        if (hadDnd) FocusDnd.disable(context)
+        TimerService.stop(context)
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch { runCatching { BiboWidget().updateAll(appContext) } }
     }
 }

@@ -95,6 +95,7 @@ import androidx.compose.ui.unit.dp
 import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
 import com.bibo.data.Goal
+import com.bibo.data.TimerController
 import com.bibo.data.TodoTask
 import java.time.LocalDate
 import java.time.ZoneId
@@ -182,6 +183,11 @@ fun TodoScreen() {
                 if (complete) {
                     val end = System.currentTimeMillis()
                     val timedStart = task.startedAt
+                    // If this task is the running shared timer, tear it down (Focus page +
+                    // notification stop) — we write the block ourselves just below.
+                    if (timedStart != null && TimerController.linkedTaskId(context) == task.id) {
+                        TimerController.clear(context)
+                    }
                     // Every completed task lands on the calendar: its real timed interval
                     // when the timer ran long enough, otherwise a short marker ending now.
                     val start =
@@ -227,27 +233,15 @@ fun TodoScreen() {
     }
 
     fun toggleTimer(task: TodoTask) {
-        if (task.startedAt == null) haptics.toggleOn() else haptics.toggleOff()
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                val started = task.startedAt
-                if (started == null) {
-                    db.todos().update(task.copy(startedAt = System.currentTimeMillis()))
-                } else {
-                    val end = System.currentTimeMillis()
-                    if (end - started >= 60_000L) {
-                        db.activityBlocks().insert(
-                            ActivityBlock(
-                                title = task.title,
-                                startMillis = started,
-                                endMillis = end,
-                                source = "TODO",
-                            )
-                        )
-                    }
-                    db.todos().update(task.copy(startedAt = null))
-                }
-            }
+        // Route through the shared TimerController so a task's timer is the same session the
+        // Focus page shows (and the notification / widget). Start links this task; pause/stop
+        // writes the TODO block and clears its running state — from either screen.
+        if (task.startedAt == null) {
+            haptics.toggleOn()
+            TimerController.startTask(context, task.id, task.title, task.goalId)
+        } else {
+            haptics.toggleOff()
+            TimerController.stopTimer(context)
         }
     }
 
