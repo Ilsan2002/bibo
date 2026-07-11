@@ -122,7 +122,9 @@ fun BiboApp(tabRequest: MutableIntState? = null) {
         ) {
             // Unfolded (wide) screen: show Calendar and Tasks together as a two-pane
             // when either of those tabs is selected. Folded stays single-pane.
-            val twoPane = maxWidth >= 720.dp && (selected == 0 || selected == 3)
+            // Threshold 600dp: the Fold's unfolded content area is ~670dp (750dp screen
+            // minus the nav rail), while the folded cover screen is ~411dp.
+            val twoPane = maxWidth >= 600.dp && (selected == 0 || selected == 3)
             if (twoPane) {
                 Row(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f).fillMaxHeight()) { CalendarScreen() }
