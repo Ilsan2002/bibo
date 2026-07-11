@@ -322,6 +322,53 @@ object Mentor {
         return params
     }
 
+    /**
+     * A short cheer for the instant the user starts a task/timer — one supportive line tied
+     * to why it matters to them, then a short fitting quote. Grounded in their goals and
+     * memory. Fast (no thinking). Returns null with no key or on failure; the caller then
+     * shows the plain timer notification.
+     */
+    suspend fun startComment(context: Context, title: String, goalId: Long?): String? =
+        withContext(Dispatchers.IO) {
+            val client = client(context) ?: return@withContext null
+            val db = BiboDb.get(context)
+            val goals = runCatching { db.goals().allOnce() }.getOrDefault(emptyList())
+            val goalName = goalId?.let { id -> goals.firstOrNull { it.id == id }?.name }
+            val goalLine = goals.joinToString("; ") { it.name }
+            val mem = memory(context)
+
+            val system = buildString {
+                appendLine(
+                    "You cheer the user on the instant they start working, inside Bibo. " +
+                        "Write ONE short, specific line of encouragement tied to why this " +
+                        "matters to them — then, on a new line, a short fitting quote in " +
+                        "quotes with its author. Under 35 words total. Warm and genuine, no " +
+                        "preamble, at most one emoji."
+                )
+                if (goalLine.isNotBlank()) appendLine("Their long-term goals: $goalLine.")
+                if (mem.isNotBlank()) {
+                    appendLine("What you know about them:")
+                    appendLine(mem.take(600))
+                }
+            }
+            val user = "They just started: \"$title\"" +
+                (goalName?.let { " (part of the goal: $it)" } ?: "") + ". Cheer them on."
+
+            try {
+                val resp = client.messages().create(
+                    MessageCreateParams.builder()
+                        .model("claude-opus-4-8")
+                        .maxTokens(200L)
+                        .system(system)
+                        .addUserMessage(user)
+                        .build()
+                )
+                responseText(resp).ifBlank { null }
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
     // ----------------------------------------------------- daily compaction
 
     /**

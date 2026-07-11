@@ -38,6 +38,7 @@ object TimerController {
     private const val KEY_PHASE_END = "phase_end"
     private const val KEY_POMOS = "pomos_done"
     private const val KEY_TASK_ID = "task_id" // set when this timer is a to-do task's timer
+    private const val KEY_COMMENT = "start_comment" // mentor's cheer, shown in the notification
 
     const val PHASE_WORK = "WORK"
     const val PHASE_BREAK = "BREAK"
@@ -59,6 +60,27 @@ object TimerController {
     fun linkedTaskId(context: Context): Long? =
         prefs(context).getLong(KEY_TASK_ID, -1L).takeIf { it > 0 }
 
+    /** The mentor's cheer for this session, once it has come back (shown on the lock screen). */
+    fun comment(context: Context): String = prefs(context).getString(KEY_COMMENT, "").orEmpty()
+
+    /**
+     * Ask the mentor for a supportive comment for the session that just started and, when it
+     * arrives, stash it and refresh the notification so it appears on the lock screen. Fully
+     * async — starting the timer is never blocked on the network.
+     */
+    private fun requestComment(context: Context, title: String, goalId: Long?) {
+        val appContext = context.applicationContext
+        val startedAt = runningStart(appContext)
+        CoroutineScope(Dispatchers.IO).launch {
+            val comment = runCatching { com.bibo.ui.Mentor.startComment(appContext, title, goalId) }.getOrNull()
+            // Only apply it if this same session is still the one running.
+            if (!comment.isNullOrBlank() && runningStart(appContext) == startedAt) {
+                prefs(appContext).edit().putString(KEY_COMMENT, comment).apply()
+                TimerService.refreshNotification(appContext)
+            }
+        }
+    }
+
     fun isPomodoro(context: Context): Boolean = prefs(context).getBoolean(KEY_POMO, false)
     fun workMin(context: Context): Int = prefs(context).getInt(KEY_WORK, 25)
     fun breakMin(context: Context): Int = prefs(context).getInt(KEY_BREAK, 5)
@@ -77,6 +99,7 @@ object TimerController {
             .putBoolean(KEY_FOCUS, false)
             .apply()
         TimerService.start(context)
+        requestComment(context, title, null)
     }
 
     /**
@@ -96,6 +119,7 @@ object TimerController {
             .putLong(KEY_TASK_ID, taskId)
             .apply()
         TimerService.start(context)
+        requestComment(context, title, goalId)
         val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             val db = BiboDb.get(appContext)
@@ -123,6 +147,7 @@ object TimerController {
             .apply()
         if (config.dnd) FocusDnd.enable(context)
         TimerService.start(context)
+        requestComment(context, config.intention.ifBlank { "Focus" }, config.goalId)
     }
 
     /** Pomodoro phase transition, driven by the service when a phase's time is up. */
