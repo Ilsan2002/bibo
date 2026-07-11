@@ -86,7 +86,9 @@ class TimerService : Service() {
     }
 
     companion object {
-        private const val CHANNEL_ID = "bibo_timer"
+        // New id (the old "bibo_timer" was created at LOW importance, which One UI hides
+        // from the lock screen; a channel's importance can't be raised after creation).
+        private const val CHANNEL_ID = "bibo_focus_timer"
         private const val NOTIF_ID = 42
         const val ACTION_STOP = "com.bibo.action.STOP_TIMER"
 
@@ -146,10 +148,18 @@ class TimerService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 manager.getNotificationChannel(CHANNEL_ID) == null
             ) {
+                // DEFAULT importance (not LOW) so One UI shows it as a real card on the lock
+                // screen — but with no sound/vibration, so a running timer stays silent.
                 manager.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID, "Focus & timer", NotificationManager.IMPORTANCE_LOW)
-                        .apply { setShowBadge(false) }
+                    NotificationChannel(CHANNEL_ID, "Focus & timer", NotificationManager.IMPORTANCE_DEFAULT)
+                        .apply {
+                            setShowBadge(false)
+                            setSound(null, null)
+                            enableVibration(false)
+                            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                        }
                 )
+                runCatching { manager.deleteNotificationChannel("bibo_timer") } // retire the old LOW one
             }
 
             val openApp = PendingIntent.getActivity(
@@ -173,6 +183,7 @@ class TimerService : Service() {
                 .setUsesChronometer(true)
                 .setChronometerCountDown(countDown)
                 .setWhen(whenTime)
+                .setCategory(NotificationCompat.CATEGORY_STOPWATCH)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setContentIntent(openApp)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
