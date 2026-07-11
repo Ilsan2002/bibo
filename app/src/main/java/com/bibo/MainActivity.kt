@@ -61,6 +61,10 @@ class MainActivity : ComponentActivity() {
         com.bibo.data.GoalReminders.schedule(this)
         com.bibo.data.MentorCheckin.schedule(this)
         com.bibo.data.TaskReminders.rescheduleAll(this)
+        // If a timer is marked running but its foreground service died (app killed,
+        // reinstalled, rebooted), bring the ongoing notification back so it keeps
+        // showing on the lock screen. Safe here — the app is in the foreground.
+        if (com.bibo.data.TimerController.isRunning(this)) com.bibo.data.TimerService.start(this)
         tabRequest.intValue = intent?.getIntExtra(EXTRA_OPEN_TAB, -1) ?: -1
         setContent {
             BiboTheme {
