@@ -137,6 +137,11 @@ object Mentor {
             // Roll finished days into episodic + semantic memory before answering.
             runCatching { compactPendingDays(context, client, today) }
 
+            // Every tool action this turn gets logged here and PERSISTED with the reply
+            // (or on its own if the turn then fails). Without this, a crash after tools ran
+            // left no record in chat history — so on the next turn the model, seeing no
+            // evidence, would re-create the same tasks. That was the duplicate-task bug.
+            val actionLog = mutableListOf<String>()
             try {
                 val system = buildSystemPrompt(context, today)
                 val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
@@ -175,6 +180,7 @@ object Mentor {
                         val inputMap = runCatching { tu._input().convert(Map::class.java) as? Map<*, *> }
                             .getOrNull() ?: emptyMap<Any, Any>()
                         val result = MentorTools.execute(context, tu.name(), inputMap)
+                        if (tu.name() != "remember" && result.isNotBlank()) actionLog += result
                         ContentBlockParam.ofToolResult(
                             ToolResultBlockParam.builder().toolUseId(tu.id()).content(result).build()
                         )
@@ -185,14 +191,29 @@ object Mentor {
                         .build()
                 }
 
+                // The action receipt rides inside the stored reply, so future turns (and the
+                // user) always see what was actually done — even days later.
+                val stored = if (actionLog.isEmpty()) reply
+                else reply + "\n\n⚙️ " + actionLog.joinToString(" ")
                 db.chat().insert(
                     ChatMessage(
-                        epochDay = today, role = "ASSISTANT", content = reply,
+                        epochDay = today, role = "ASSISTANT", content = stored,
                         createdAt = System.currentTimeMillis(),
                     )
                 )
                 Result.success(reply)
             } catch (e: Throwable) {
+                // If tools already ran before the failure, persist that record FIRST —
+                // otherwise the next turn has no idea those actions happened.
+                if (actionLog.isNotEmpty()) {
+                    db.chat().insert(
+                        ChatMessage(
+                            epochDay = today, role = "ASSISTANT",
+                            content = "⚙️ " + actionLog.joinToString(" ") + " (connection dropped before I could reply)",
+                            createdAt = System.currentTimeMillis(),
+                        )
+                    )
+                }
                 val friendly = when (e) {
                     is UnauthorizedException -> "API key was rejected — check it in settings (key icon)."
                     else -> e.message?.take(200) ?: "Couldn't reach the mentor."
@@ -481,6 +502,26 @@ object Mentor {
             "${LocalDate.ofEpochDay(d.epochDay)}: ${d.digest}"
         }
 
+        // The mentor must see the live task list — without it, it can't know what already
+        // exists and will happily re-create the same plan (the duplicate-task bug).
+        val allTasks = db.todos().allOnce()
+        val goalNames = db.goals().allOnce().associate { it.id to it.name }
+        val openTasks = allTasks
+            .filter { it.parentId == null && it.completedAt == null }
+            .take(25)
+            .joinToString("\n") { t ->
+                val subs = allTasks.filter { it.parentId == t.id }
+                buildString {
+                    append("- ${t.title}")
+                    val bits = mutableListOf<String>()
+                    t.goalId?.let { id -> goalNames[id]?.let { bits += "goal: $it" } }
+                    if (subs.isNotEmpty()) bits += "${subs.count { it.completedAt != null }}/${subs.size} steps done"
+                    if (t.rewardCents > 0) bits += "worth ${t.rewardCents / 100}$"
+                    t.dueEpochDay?.let { bits += "due ${LocalDate.ofEpochDay(it)}" }
+                    if (bits.isNotEmpty()) append(" (${bits.joinToString(", ")})")
+                }
+            }
+
         val todayFacts = gatherDayFacts(context, today)
 
         return buildString {
@@ -499,11 +540,15 @@ object Mentor {
                 - When they reflect on their day, listen first and mirror what you heard, then
                   add one honest observation.
                 - You can ACT, not just talk. When it helps, use your tools to create tasks,
-                  goals, or calendar events, or to tick a task off. When they name a big or
-                  vague task, create it and break it into the smallest concrete first steps as
-                  subtasks — the point is to make an overwhelming goal feel doable — and file
-                  it under the goal it serves. Don't ask permission for obvious, reversible
-                  actions; just do it and tell them in one sentence what you set up.
+                  goals, or calendar events, tick a task off, edit one, or delete one. When
+                  they name a big or vague task, create it and break it into the smallest
+                  concrete first steps as subtasks — the point is to make an overwhelming goal
+                  feel doable — and file it under the goal it serves. Don't ask permission for
+                  obvious, reversible actions; just do it and tell them in one sentence what
+                  you set up.
+                - OPEN TASKS below is the live list of what already exists. NEVER create a
+                  task that duplicates one of them (same plan, reworded) — reference the
+                  existing one, or use edit_task / delete_task to change or clean it up.
                 - When they're stuck or avoiding a first step, set a reminder on that step at
                   a concrete time, with a note that ties the tiny action to the big payoff
                   (open the laptop, make the one call — that's what starts the whole thing).
@@ -530,6 +575,9 @@ object Mentor {
                 appendLine("[LONG-TERM GOALS]")
                 appendLine(goals)
             }
+            appendLine()
+            appendLine("[OPEN TASKS — these already exist; never re-create them]")
+            appendLine(openTasks.ifBlank { "(none)" })
             if (digests.isNotBlank()) {
                 appendLine()
                 appendLine("[RECENT DAYS]")

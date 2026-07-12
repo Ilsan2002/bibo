@@ -7,6 +7,7 @@ import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
 import com.bibo.data.DeviceCalendarRepo
 import com.bibo.data.Goal
+import com.bibo.data.TimerController
 import com.bibo.data.TaskReminders
 import com.bibo.data.TodoTask
 import java.time.LocalDate
@@ -229,6 +230,14 @@ object MentorTools {
     private suspend fun createTask(context: Context, input: Map<*, *>): String {
         val db = BiboDb.get(context)
         val title = str(input, "title") ?: return "A task needs a title."
+        // Hard duplicate guard: an identical open task means this was already created
+        // (a retried turn, or the model forgot). Refuse rather than double up.
+        val existingOpen = db.todos().allOnce()
+            .firstOrNull { it.parentId == null && it.completedAt == null && it.title.equals(title, true) }
+        if (existingOpen != null) {
+            return "\"$title\" is ALREADY on the list — not creating a duplicate. " +
+                "Reference it, or use edit_task / delete_task to change it."
+        }
         val subtasks = (input["subtasks"] as? List<*>)
             ?.mapNotNull { (it as? String)?.trim() }?.filter { it.isNotEmpty() }.orEmpty()
         val goal = matchGoal(db.goals().allOnce(), str(input, "goal"))
@@ -372,11 +381,20 @@ object MentorTools {
             ?: open.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
             ?: return "No open task matching \"$q\"."
         val end = System.currentTimeMillis()
+        // If this task is the one currently being timed, tear the shared timer down
+        // WITHOUT letting it write its own block — we write the single block below.
+        // (Otherwise stopping the timer later would double-log the same work.)
+        val timedStart = match.startedAt
+        if (TimerController.linkedTaskId(context) == match.id) {
+            TimerController.clear(context)
+        }
+        val start = if (timedStart != null && end - timedStart >= 60_000L) timedStart
+        else end - 15 * 60_000L
         db.todos().update(match.copy(completedAt = end, startedAt = null))
         // Land it on the calendar too, matching the Tasks-tab complete flow.
         db.activityBlocks().insert(
             ActivityBlock(
-                title = match.title, startMillis = end - 15 * 60_000L,
+                title = match.title, startMillis = start,
                 endMillis = end, source = "TODO", goalId = match.goalId,
             )
         )

@@ -493,7 +493,7 @@ fun TodoScreen() {
             initialGoalId = parent?.goalId ?: filterGoalId,
             showGoalPicker = parent == null,
             onDismiss = { showAddSheet = false },
-            onAdd = { title, goalId ->
+            onAdd = { title, goalId, rewardCents ->
                 showAddSheet = false
                 haptics.confirm()
                 val parentId = parent?.id
@@ -507,6 +507,7 @@ fun TodoScreen() {
                             createdAt = now2,
                             sortOrder = now2, // new tasks sort to the bottom
                             goalId = resolvedGoal,
+                            rewardCents = if (parentId == null) rewardCents else 0,
                         )
                     )
                 }
@@ -797,11 +798,12 @@ private fun AddTaskSheet(
     initialGoalId: Long?,
     showGoalPicker: Boolean,
     onDismiss: () -> Unit,
-    onAdd: (String, Long?) -> Unit,
+    onAdd: (String, Long?, Int) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var title by remember { mutableStateOf("") }
     var goalId by remember { mutableStateOf(initialGoalId) }
+    var rewardCents by remember { mutableIntStateOf(0) }
     val focusRequester = remember { FocusRequester() }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -823,7 +825,7 @@ private fun AddTaskSheet(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = {
-                    if (title.isNotBlank()) onAdd(title.trim(), goalId)
+                    if (title.isNotBlank()) onAdd(title.trim(), goalId, rewardCents)
                 }),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -849,8 +851,24 @@ private fun AddTaskSheet(
                     }
                 }
             }
+            if (parent == null) {
+                Text(
+                    "Worth (treat money when done)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Rewards.REWARD_TIERS.forEach { cents ->
+                        FilterChip(
+                            selected = rewardCents == cents,
+                            onClick = { rewardCents = cents },
+                            label = { Text(if (cents == 0) "—" else Rewards.format(cents)) },
+                        )
+                    }
+                }
+            }
             Button(
-                onClick = { onAdd(title.trim(), goalId) },
+                onClick = { onAdd(title.trim(), goalId, rewardCents) },
                 enabled = title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Add") }
