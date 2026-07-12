@@ -196,6 +196,9 @@ interface TodoDao {
     @Query("SELECT * FROM todo_tasks WHERE completedAt IS NULL")
     suspend fun incompleteOnce(): List<TodoTask>
 
+    @Query("SELECT * FROM todo_tasks ORDER BY sortOrder")
+    suspend fun allOnce(): List<TodoTask>
+
     @Query("SELECT * FROM todo_tasks WHERE goalId = :goalId ORDER BY sortOrder")
     fun forGoal(goalId: Long): Flow<List<TodoTask>>
 

@@ -131,6 +131,50 @@ object MentorTools {
             )
             .build(),
         Tool.builder()
+            .name("delete_task")
+            .description(
+                "Delete a task (and its subtasks) by title — for clearing duplicates or things " +
+                    "that no longer matter. Deletes one match per call and tells you how many " +
+                    "similar ones remain, so call it again to remove more (e.g. to dedupe, delete " +
+                    "the extras and keep one). Set all_matching to true to remove every match at once."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("title", strProp("Title (or part of it) of the task to delete"))
+                            .putAdditionalProperty(
+                                "all_matching",
+                                JsonValue.from(mapOf("type" to "boolean", "description" to "Delete every task matching the title (optional)"))
+                            )
+                            .build()
+                    )
+                    .required(listOf("title"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("edit_task")
+            .description("Change an existing task — rename it, re-file it under a goal, set a due date, or set its reward.")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("title", strProp("Current title (or part of it) of the task to edit"))
+                            .putAdditionalProperty("new_title", strProp("New title (optional)"))
+                            .putAdditionalProperty("goal", strProp("Move it under this existing goal by name (optional)"))
+                            .putAdditionalProperty("due_date", strProp("Set the due date as YYYY-MM-DD (optional)"))
+                            .putAdditionalProperty(
+                                "reward_dollars",
+                                JsonValue.from(mapOf("type" to "number", "description" to "Set the treat-money reward in dollars (optional)"))
+                            )
+                            .build()
+                    )
+                    .required(listOf("title"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
             .name("remember")
             .description(
                 "Save one durable fact to your long-term memory so you keep it across days. " +
@@ -161,6 +205,8 @@ object MentorTools {
                 "create_goal" -> createGoal(context, input)
                 "add_calendar_event" -> addEvent(context, input)
                 "complete_task" -> completeTask(context, input)
+                "delete_task" -> deleteTask(context, input)
+                "edit_task" -> editTask(context, input)
                 "remember" -> remember(context, input)
                 else -> "Unknown tool: $name"
             }
@@ -263,6 +309,53 @@ object MentorTools {
             )
             "Added \"$title\" to your Bibo calendar, $when0."
         }
+    }
+
+    private suspend fun deleteTask(context: Context, input: Map<*, *>): String {
+        val db = BiboDb.get(context)
+        val q = str(input, "title") ?: return "Which task?"
+        val parents = db.todos().allOnce().filter { it.parentId == null }
+        val matches = parents.filter { it.title.equals(q, true) }
+            .ifEmpty { parents.filter { it.title.contains(q, true) || q.contains(it.title, true) } }
+        if (matches.isEmpty()) return "No task matching \"$q\"."
+
+        val all = input["all_matching"] == true
+        val toDelete = if (all) matches else listOf(matches.first())
+        toDelete.forEach { t ->
+            db.todos().deleteChildren(t.id)
+            db.todos().delete(t)
+        }
+        val remaining = matches.size - toDelete.size
+        return if (all) {
+            "Deleted ${toDelete.size} task(s) matching \"$q\"."
+        } else {
+            "Deleted \"${toDelete.first().title}\"." +
+                if (remaining > 0) " $remaining more like it remain — call again to remove another." else ""
+        }
+    }
+
+    private suspend fun editTask(context: Context, input: Map<*, *>): String {
+        val db = BiboDb.get(context)
+        val q = str(input, "title") ?: return "Which task?"
+        val all = db.todos().allOnce().filter { it.parentId == null }
+        val task = all.firstOrNull { it.title.equals(q, true) }
+            ?: all.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
+            ?: return "No task matching \"$q\"."
+
+        val newTitle = str(input, "new_title")
+        val goal = matchGoal(db.goals().allOnce(), str(input, "goal"))
+        val due = day(input, "due_date")
+        val reward = (input["reward_dollars"] as? Number)?.let { (it.toDouble() * 100).toInt() }?.coerceIn(0, 10000)
+
+        db.todos().update(
+            task.copy(
+                title = newTitle ?: task.title,
+                goalId = goal?.id ?: task.goalId,
+                dueEpochDay = due ?: task.dueEpochDay,
+                rewardCents = reward ?: task.rewardCents,
+            )
+        )
+        return "Updated \"${newTitle ?: task.title}\"."
     }
 
     private fun remember(context: Context, input: Map<*, *>): String {

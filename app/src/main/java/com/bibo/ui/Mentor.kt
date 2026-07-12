@@ -53,7 +53,7 @@ object Mentor {
     private const val MAX_COMPACT_AGE_DAYS = 14
 
     /** Safety cap on the tool-call loop so a misbehaving turn can't spin forever. */
-    private const val MAX_TOOL_ITERATIONS = 6
+    private const val MAX_TOOL_ITERATIONS = 10
 
     /** Intraday memory grows by append; nightly compaction consolidates. Cap the lines. */
     private const val MAX_MEMORY_LINES = 60
