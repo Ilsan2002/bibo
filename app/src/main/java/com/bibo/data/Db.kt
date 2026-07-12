@@ -457,6 +457,12 @@ interface ChatDao {
             "AND epochDay NOT IN (SELECT epochDay FROM chat_days) ORDER BY epochDay"
     )
     suspend fun undigestedDays(today: Long): List<Long>
+
+    @Query(
+        "SELECT * FROM chat_messages WHERE role != 'ERROR' AND content LIKE '%' || :q || '%' " +
+            "ORDER BY id DESC LIMIT :limit"
+    )
+    suspend fun search(q: String, limit: Int): List<ChatMessage>
 }
 
 @Dao
@@ -469,6 +475,9 @@ interface ChatDayDao {
 
     @Query("SELECT * FROM chat_days WHERE epochDay >= :sinceDay ORDER BY epochDay")
     suspend fun since(sinceDay: Long): List<ChatDay>
+
+    @Query("SELECT * FROM chat_days WHERE digest LIKE '%' || :q || '%' ORDER BY epochDay DESC LIMIT :limit")
+    suspend fun search(q: String, limit: Int): List<ChatDay>
 }
 
 private val MIGRATION_8_9 = object : Migration(8, 9) {

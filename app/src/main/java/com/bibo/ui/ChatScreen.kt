@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -69,6 +70,7 @@ fun ChatScreen() {
     var hasKey by remember { mutableStateOf(Mentor.apiKey(context) != null) }
     var showKeyDialog by remember { mutableStateOf(false) }
     var showMemory by remember { mutableStateOf(false) }
+    var showPersona by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
 
@@ -105,6 +107,9 @@ fun ChatScreen() {
             Text("Mentor", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
             if (hasKey) {
+                IconButton(onClick = { showPersona = true }) {
+                    Icon(Icons.Filled.Tune, contentDescription = "Mentor personality")
+                }
                 IconButton(onClick = { showMemory = true }) {
                     Icon(Icons.Filled.Bookmarks, contentDescription = "What the mentor remembers")
                 }
@@ -233,6 +238,50 @@ fun ChatScreen() {
             },
         )
     }
+
+    if (showPersona) {
+        PersonaDialog(
+            initial = Mentor.persona(context),
+            onDismiss = { showPersona = false },
+            onSave = { text ->
+                Mentor.setPersona(context, text)
+                showPersona = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun PersonaDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Mentor personality") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "This is the voice half of the mentor's instructions — edit it freely. " +
+                        "Its abilities (tasks, memory, your data) stay intact whatever you write.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    minLines = 8,
+                    maxLines = 14,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(onClick = { text = Mentor.DEFAULT_PERSONA }) {
+                    Text("Reset to default")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank()) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

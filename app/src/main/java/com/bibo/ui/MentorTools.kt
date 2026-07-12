@@ -176,6 +176,57 @@ object MentorTools {
             )
             .build(),
         Tool.builder()
+            .name("search_history")
+            .description(
+                "Search EVERYTHING you and the user have ever said, all past day summaries, " +
+                    "and your memory notes — far beyond what's in your context. Use it whenever " +
+                    "they reference something you don't see (an old decision, plan, name, or " +
+                    "number) before saying you don't remember. Keyword or short phrase; if no " +
+                    "hits, retry with a different word."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("query", strProp("Keyword or short phrase to search for"))
+                            .build()
+                    )
+                    .required(listOf("query"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("recall_day")
+            .description("Pull up a specific past day: its summary plus the full conversation from that date.")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("date", strProp("The day to recall, as YYYY-MM-DD"))
+                            .build()
+                    )
+                    .required(listOf("date"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("edit_memory")
+            .description(
+                "Rewrite your long-term memory notes in full — to correct a fact, drop stale " +
+                    "items, or reorganize. Pass the complete new notes; they replace the old ones."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("notes", strProp("The complete new memory notes (max ~180 words)"))
+                            .build()
+                    )
+                    .required(listOf("notes"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
             .name("remember")
             .description(
                 "Save one durable fact to your long-term memory so you keep it across days. " +
@@ -208,6 +259,9 @@ object MentorTools {
                 "complete_task" -> completeTask(context, input)
                 "delete_task" -> deleteTask(context, input)
                 "edit_task" -> editTask(context, input)
+                "search_history" -> searchHistory(context, input)
+                "recall_day" -> recallDay(context, input)
+                "edit_memory" -> editMemory(context, input)
                 "remember" -> remember(context, input)
                 else -> "Unknown tool: $name"
             }
@@ -371,6 +425,71 @@ object MentorTools {
         val fact = str(input, "fact") ?: return "Nothing to remember."
         Mentor.appendMemory(context, fact)
         return "Saved to memory."
+    }
+
+    /**
+     * Keyword retrieval over the full history — chat, day digests, memory notes. This is
+     * what makes context effectively infinite: nothing ever said is out of reach, it just
+     * has to be searched for instead of carried in the window.
+     */
+    private suspend fun searchHistory(context: Context, input: Map<*, *>): String {
+        val q = str(input, "query") ?: return "Search for what?"
+        val db = BiboDb.get(context)
+        val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+        val msgs = db.chat().search(q, 10)
+        val days = db.chatDays().search(q, 6)
+        val memLines = Mentor.memory(context).lines().filter { it.contains(q, true) }
+
+        if (msgs.isEmpty() && days.isEmpty() && memLines.isEmpty()) {
+            return "No matches for \"$q\" anywhere in history. Try a different keyword."
+        }
+        return buildString {
+            if (memLines.isNotEmpty()) {
+                appendLine("From memory notes:")
+                memLines.take(5).forEach { appendLine("  $it") }
+            }
+            if (days.isNotEmpty()) {
+                appendLine("From day summaries:")
+                days.forEach { d ->
+                    appendLine("  ${LocalDate.ofEpochDay(d.epochDay).format(fmt)}: ${d.digest.take(220)}")
+                }
+            }
+            if (msgs.isNotEmpty()) {
+                appendLine("From conversation:")
+                msgs.forEach { m ->
+                    val who = if (m.role == "USER") "them" else "you"
+                    appendLine("  ${LocalDate.ofEpochDay(m.epochDay).format(fmt)} ($who): ${m.content.take(220)}")
+                }
+            }
+        }.trim()
+    }
+
+    /** memory_get equivalent: one specific day — its digest plus the full transcript. */
+    private suspend fun recallDay(context: Context, input: Map<*, *>): String {
+        val date = str(input, "date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            ?: return "Couldn't read the date (need YYYY-MM-DD)."
+        val db = BiboDb.get(context)
+        val day = date.toEpochDay()
+        val digest = db.chatDays().get(day)?.digest
+        val transcript = db.chat().forDay(day).joinToString("\n") { m ->
+            (if (m.role == "USER") "them: " else "you: ") + m.content.take(300)
+        }
+        if (digest == null && transcript.isBlank()) return "Nothing recorded on $date."
+        return buildString {
+            appendLine("$date:")
+            digest?.let { appendLine("Summary: $it") }
+            if (transcript.isNotBlank()) {
+                appendLine("Conversation:")
+                appendLine(transcript.take(2500))
+            }
+        }.trim()
+    }
+
+    private fun editMemory(context: Context, input: Map<*, *>): String {
+        val notes = str(input, "notes") ?: return "Pass the complete new notes."
+        Mentor.saveMemory(context, notes)
+        return "Memory notes rewritten."
     }
 
     private suspend fun completeTask(context: Context, input: Map<*, *>): String {
