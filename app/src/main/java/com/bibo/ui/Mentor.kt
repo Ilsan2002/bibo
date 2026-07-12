@@ -16,6 +16,8 @@ import com.bibo.data.BiboDb
 import com.bibo.data.ChatDay
 import com.bibo.data.ChatMessage
 import com.bibo.data.DeviceCalendarRepo
+import com.bibo.data.Rewards
+import com.bibo.data.TimerController
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -552,12 +554,70 @@ object Mentor {
                     t.goalId?.let { id -> goalNames[id]?.let { bits += "goal: $it" } }
                     if (subs.isNotEmpty()) bits += "${subs.count { it.completedAt != null }}/${subs.size} steps done"
                     if (t.rewardCents > 0) bits += "worth ${t.rewardCents / 100}$"
-                    t.dueEpochDay?.let { bits += "due ${LocalDate.ofEpochDay(it)}" }
+                    t.dueEpochDay?.let {
+                        bits += if (it < today) "OVERDUE since ${LocalDate.ofEpochDay(it)}"
+                        else "due ${LocalDate.ofEpochDay(it)}"
+                    }
                     if (bits.isNotEmpty()) append(" (${bits.joinToString(", ")})")
                 }
             }
 
         val todayFacts = gatherDayFacts(context, today)
+
+        // What's happening right now (running timer / focus session).
+        val rightNow = if (TimerController.isRunning(context)) {
+            val min = (System.currentTimeMillis() - TimerController.runningStart(context)) / 60_000
+            "Timing \"${TimerController.runningTitle(context)}\" — ${min}m in" +
+                (TimerController.goalId(context)?.let { id -> goalNames[id]?.let { " (goal: $it)" } } ?: "")
+        } else {
+            null
+        }
+
+        // The week ahead: calendar events, due tasks, goal targets (tomorrow .. +7 days).
+        val zone = ZoneId.systemDefault()
+        val fmtDay = DateTimeFormatter.ofPattern("EEE MMM d")
+        val fmtTime = DateTimeFormatter.ofPattern("HH:mm")
+        val upcoming = buildList {
+            val calendar = DeviceCalendarRepo(context)
+            if (calendar.hasPermissions()) {
+                val start = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                val end = date.plusDays(8).atStartOfDay(zone).toInstant().toEpochMilli()
+                calendar.queryInstances(start, end).sortedBy { it.begin }.take(15).forEach { e ->
+                    val z = Instant.ofEpochMilli(e.begin).atZone(zone)
+                    add(
+                        "${z.format(fmtDay)}: ${e.title}" +
+                            if (e.allDay) " (all-day)" else " at ${z.format(fmtTime)}"
+                    )
+                }
+            }
+            allTasks.filter {
+                it.parentId == null && it.completedAt == null &&
+                    it.dueEpochDay != null && it.dueEpochDay > today && it.dueEpochDay <= today + 7
+            }.sortedBy { it.dueEpochDay }.forEach { t ->
+                add("${LocalDate.ofEpochDay(t.dueEpochDay!!).format(fmtDay)}: task \"${t.title}\" due")
+            }
+            db.goals().allOnce().filter { it.targetDate != null && it.targetDate!! in (today + 1)..(today + 7) }
+                .forEach { g ->
+                    add("${LocalDate.ofEpochDay(g.targetDate!!).format(fmtDay)}: GOAL TARGET — ${g.name}")
+                }
+        }.joinToString("\n")
+
+        // Treat-money state: what they've earned, can spend, and are saving toward.
+        val treats = buildString {
+            val earned = runCatching { Rewards.earnedCents(context) }.getOrDefault(0)
+            val available = runCatching { Rewards.availableCents(context) }.getOrDefault(0)
+            append("Earned ${Rewards.format(earned)} of ${Rewards.format(Rewards.budgetCents(context))} weekly budget")
+            append("; ${Rewards.format(available)} available to spend (resets Monday).")
+            val wishes = runCatching { db.wishlist().allOnce() }.getOrDefault(emptyList())
+            if (wishes.isNotEmpty()) {
+                append(" Wishlist: ")
+                append(
+                    wishes.joinToString(", ") { w ->
+                        "${w.name} ${Rewards.format(w.priceCents)}" + if (w.redeemedAt != null) " (treated ✓)" else ""
+                    }
+                )
+            }
+        }
 
         return buildString {
             appendLine(persona(context))
@@ -574,9 +634,16 @@ object Mentor {
                   those matter to them. Ground recommendations in their actual numbers.
                 - You can ACT, not just talk: create tasks (broken into the smallest concrete
                   steps as subtasks, filed under the right goal, with treat-money rewards),
-                  complete / edit / delete tasks, create goals, add calendar events, and set
-                  reminders. Don't ask permission for obvious, reversible actions — do it and
-                  say what you set up in one sentence.
+                  complete / edit / delete tasks, add steps to existing tasks, create / edit /
+                  retire goals, add / move / cancel calendar events, log food they mention,
+                  tick habits, start or stop their focus timer, and set reminders. Don't ask
+                  permission for obvious, reversible actions — do it and say what you set up
+                  in one sentence.
+                - TODAY SO FAR + RIGHT NOW + NEXT 7 DAYS + TREATS below are their complete
+                  current picture — read it before answering. Plan against the week ahead
+                  (warn about tomorrow's events, overdue tasks, approaching goal targets),
+                  and use treat money as a lever: remind them what finishing a task earns
+                  and what's within reach on their wishlist.
                 - OPEN TASKS below is the live list of what already exists. NEVER create a
                   task that duplicates one of them (same plan, reworded) — reference the
                   existing one, or use edit_task / delete_task to change or clean it up.
@@ -617,6 +684,19 @@ object Mentor {
             appendLine()
             appendLine("[TODAY SO FAR]")
             appendLine(todayFacts.ifBlank { "Nothing logged yet today." })
+            rightNow?.let {
+                appendLine()
+                appendLine("[RIGHT NOW]")
+                appendLine(it)
+            }
+            if (upcoming.isNotBlank()) {
+                appendLine()
+                appendLine("[NEXT 7 DAYS]")
+                appendLine(upcoming)
+            }
+            appendLine()
+            appendLine("[TREATS THIS WEEK]")
+            appendLine(treats)
         }
     }
 

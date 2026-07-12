@@ -5,8 +5,12 @@ import com.anthropic.core.JsonValue
 import com.anthropic.models.messages.Tool
 import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
+import com.bibo.data.DeviceCalendarEvent
 import com.bibo.data.DeviceCalendarRepo
+import com.bibo.data.FocusConfig
+import com.bibo.data.FoodEntry
 import com.bibo.data.Goal
+import com.bibo.data.HabitDay
 import com.bibo.data.TimerController
 import com.bibo.data.TaskReminders
 import com.bibo.data.TodoTask
@@ -176,6 +180,169 @@ object MentorTools {
             )
             .build(),
         Tool.builder()
+            .name("edit_goal")
+            .description("Change a long-term goal — rename it, rewrite its details/why, or set its target date.")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("name", strProp("Current name (or part) of the goal"))
+                            .putAdditionalProperty("new_name", strProp("New name (optional)"))
+                            .putAdditionalProperty("details", strProp("New description / why it matters (optional)"))
+                            .putAdditionalProperty("target_date", strProp("New target date YYYY-MM-DD (optional)"))
+                            .build()
+                    )
+                    .required(listOf("name"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("delete_goal")
+            .description("Retire a goal that no longer matters (it's archived; its tasks stay but lose the folder).")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("name", strProp("Name (or part) of the goal to retire"))
+                            .build()
+                    )
+                    .required(listOf("name"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("edit_calendar_event")
+            .description(
+                "Move or rename an upcoming calendar event (next 14 days), matched by title. " +
+                    "Recurring Google events can't be edited — you'll be told if so."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("title", strProp("Title (or part) of the event to change"))
+                            .putAdditionalProperty("new_title", strProp("New title (optional)"))
+                            .putAdditionalProperty("new_date", strProp("New date YYYY-MM-DD (optional)"))
+                            .putAdditionalProperty("new_start_time", strProp("New start HH:mm 24h (optional)"))
+                            .putAdditionalProperty("new_end_time", strProp("New end HH:mm 24h (optional)"))
+                            .build()
+                    )
+                    .required(listOf("title"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("delete_calendar_event")
+            .description("Cancel an upcoming calendar event (next 14 days), matched by title.")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("title", strProp("Title (or part) of the event to cancel"))
+                            .build()
+                    )
+                    .required(listOf("title"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("add_subtask")
+            .description("Add one or more steps to an EXISTING task (appended after its current steps).")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("task", strProp("Title (or part) of the existing task"))
+                            .putAdditionalProperty(
+                                "steps",
+                                JsonValue.from(
+                                    mapOf(
+                                        "type" to "array", "items" to mapOf("type" to "string"),
+                                        "description" to "The step(s) to add, in order",
+                                    )
+                                )
+                            )
+                            .build()
+                    )
+                    .required(listOf("task", "steps"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("log_food")
+            .description(
+                "Log something they ate or drank today (they mention food in chat -> log it). " +
+                    "YOU estimate the nutrition numbers."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("label", strProp("Short name, e.g. 'burger and fries'"))
+                            .putAdditionalProperty("calories", JsonValue.from(mapOf("type" to "number", "description" to "Estimated kcal")))
+                            .putAdditionalProperty("sugar_g", JsonValue.from(mapOf("type" to "number", "description" to "Estimated sugar grams (optional)")))
+                            .putAdditionalProperty("caffeine_mg", JsonValue.from(mapOf("type" to "number", "description" to "Estimated caffeine mg (optional)")))
+                            .build()
+                    )
+                    .required(listOf("label", "calories"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("set_habit")
+            .description("Mark one of today's habits done or not: showered, clean_clothes, worked_out, prayed.")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty(
+                                "habit",
+                                JsonValue.from(
+                                    mapOf(
+                                        "type" to "string",
+                                        "enum" to listOf("showered", "clean_clothes", "worked_out", "prayed"),
+                                    )
+                                )
+                            )
+                            .putAdditionalProperty("done", JsonValue.from(mapOf("type" to "boolean")))
+                            .build()
+                    )
+                    .required(listOf("habit", "done"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("start_focus")
+            .description(
+                "Start the shared focus timer on something (shows on the Focus page, notification, " +
+                    "and lock screen). Use when they say they're starting work on something now."
+            )
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("intention", strProp("What they're focusing on"))
+                            .putAdditionalProperty("goal", strProp("Existing goal this serves, by name (optional)"))
+                            .build()
+                    )
+                    .required(listOf("intention"))
+                    .build()
+            )
+            .build(),
+        Tool.builder()
+            .name("stop_timer")
+            .description("Stop the currently running timer/focus session; it's saved to the calendar.")
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAdditionalProperty("reflection", strProp("One-line note on how it went (optional)"))
+                            .build()
+                    )
+                    .build()
+            )
+            .build(),
+        Tool.builder()
             .name("search_history")
             .description(
                 "Search EVERYTHING you and the user have ever said, all past day summaries, " +
@@ -259,6 +426,15 @@ object MentorTools {
                 "complete_task" -> completeTask(context, input)
                 "delete_task" -> deleteTask(context, input)
                 "edit_task" -> editTask(context, input)
+                "edit_goal" -> editGoal(context, input)
+                "delete_goal" -> deleteGoal(context, input)
+                "edit_calendar_event" -> editCalendarEvent(context, input)
+                "delete_calendar_event" -> deleteCalendarEvent(context, input)
+                "add_subtask" -> addSubtask(context, input)
+                "log_food" -> logFood(context, input)
+                "set_habit" -> setHabit(context, input)
+                "start_focus" -> startFocus(context, input)
+                "stop_timer" -> stopTimerTool(context, input)
                 "search_history" -> searchHistory(context, input)
                 "recall_day" -> recallDay(context, input)
                 "edit_memory" -> editMemory(context, input)
@@ -377,19 +553,26 @@ object MentorTools {
     private suspend fun deleteTask(context: Context, input: Map<*, *>): String {
         val db = BiboDb.get(context)
         val q = str(input, "title") ?: return "Which task?"
-        val parents = db.todos().allOnce().filter { it.parentId == null }
-        val matches = parents.filter { it.title.equals(q, true) }
+        val all = db.todos().allOnce()
+        val parents = all.filter { it.parentId == null }
+        var matches = parents.filter { it.title.equals(q, true) }
             .ifEmpty { parents.filter { it.title.contains(q, true) || q.contains(it.title, true) } }
+        if (matches.isEmpty()) {
+            // No parent matched — try subtasks (deleting one removes just that step).
+            val subs = all.filter { it.parentId != null }
+            matches = subs.filter { it.title.equals(q, true) }
+                .ifEmpty { subs.filter { it.title.contains(q, true) || q.contains(it.title, true) } }
+        }
         if (matches.isEmpty()) return "No task matching \"$q\"."
 
-        val all = input["all_matching"] == true
-        val toDelete = if (all) matches else listOf(matches.first())
+        val deleteAll = input["all_matching"] == true
+        val toDelete = if (deleteAll) matches else listOf(matches.first())
         toDelete.forEach { t ->
             db.todos().deleteChildren(t.id)
             db.todos().delete(t)
         }
         val remaining = matches.size - toDelete.size
-        return if (all) {
+        return if (deleteAll) {
             "Deleted ${toDelete.size} task(s) matching \"$q\"."
         } else {
             "Deleted \"${toDelete.first().title}\"." +
@@ -400,9 +583,12 @@ object MentorTools {
     private suspend fun editTask(context: Context, input: Map<*, *>): String {
         val db = BiboDb.get(context)
         val q = str(input, "title") ?: return "Which task?"
-        val all = db.todos().allOnce().filter { it.parentId == null }
+        val everything = db.todos().allOnce()
+        val all = everything.filter { it.parentId == null }
         val task = all.firstOrNull { it.title.equals(q, true) }
             ?: all.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
+            ?: everything.firstOrNull { it.parentId != null && it.title.equals(q, true) } // subtask rename
+            ?: everything.firstOrNull { it.parentId != null && (it.title.contains(q, true) || q.contains(it.title, true)) }
             ?: return "No task matching \"$q\"."
 
         val newTitle = str(input, "new_title")
@@ -425,6 +611,139 @@ object MentorTools {
         val fact = str(input, "fact") ?: return "Nothing to remember."
         Mentor.appendMemory(context, fact)
         return "Saved to memory."
+    }
+
+    private suspend fun editGoal(context: Context, input: Map<*, *>): String {
+        val db = BiboDb.get(context)
+        val goal = matchGoal(db.goals().allOnce(), str(input, "name"))
+            ?: return "No goal matching \"${str(input, "name")}\"."
+        db.goals().update(
+            goal.copy(
+                name = str(input, "new_name") ?: goal.name,
+                details = str(input, "details") ?: goal.details,
+                targetDate = day(input, "target_date") ?: goal.targetDate,
+            )
+        )
+        return "Updated goal \"${str(input, "new_name") ?: goal.name}\"."
+    }
+
+    private suspend fun deleteGoal(context: Context, input: Map<*, *>): String {
+        val db = BiboDb.get(context)
+        val goal = matchGoal(db.goals().allOnce(), str(input, "name"))
+            ?: return "No goal matching \"${str(input, "name")}\"."
+        db.goals().update(goal.copy(archived = true))
+        return "Retired goal \"${goal.name}\" (its tasks remain, just without the folder)."
+    }
+
+    /** Find an upcoming Google Calendar instance (next 14 days) by fuzzy title. */
+    private fun findUpcomingEvent(context: Context, q: String): DeviceCalendarEvent? {
+        val repo = DeviceCalendarRepo(context)
+        if (!repo.hasPermissions()) return null
+        val zone = ZoneId.systemDefault()
+        val start = LocalDate.now().atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = LocalDate.now().plusDays(14).atStartOfDay(zone).toInstant().toEpochMilli()
+        val all = repo.queryInstances(start, end).sortedBy { it.begin }
+        return all.firstOrNull { it.title.equals(q, true) }
+            ?: all.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
+    }
+
+    private fun editCalendarEvent(context: Context, input: Map<*, *>): String {
+        val q = str(input, "title") ?: return "Which event?"
+        val ev = findUpcomingEvent(context, q)
+            ?: return "No upcoming event matching \"$q\" in the next 14 days."
+        val zone = ZoneId.systemDefault()
+        val oldStart = java.time.Instant.ofEpochMilli(ev.begin).atZone(zone)
+        val newDate = str(input, "new_date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            ?: oldStart.toLocalDate()
+        val newStart = str(input, "new_start_time")?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+            ?: oldStart.toLocalTime()
+        val durationMs = (ev.end - ev.begin).coerceAtLeast(15 * 60_000L)
+        val startMs = newDate.atTime(newStart).atZone(zone).toInstant().toEpochMilli()
+        val endMs = str(input, "new_end_time")?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+            ?.let { newDate.atTime(it).atZone(zone).toInstant().toEpochMilli() }
+            ?.takeIf { it > startMs }
+            ?: (startMs + durationMs)
+        val newTitle = str(input, "new_title") ?: ev.title
+        return if (DeviceCalendarRepo(context).updateEvent(ev.id, newTitle, startMs, endMs)) {
+            "Moved \"$newTitle\" to ${newDate.format(DateTimeFormatter.ofPattern("EEE MMM d"))} at $newStart."
+        } else {
+            "Couldn't change \"${ev.title}\" — it's likely a recurring event, which I can't safely edit."
+        }
+    }
+
+    private fun deleteCalendarEvent(context: Context, input: Map<*, *>): String {
+        val q = str(input, "title") ?: return "Which event?"
+        val ev = findUpcomingEvent(context, q)
+            ?: return "No upcoming event matching \"$q\" in the next 14 days."
+        return if (DeviceCalendarRepo(context).deleteEvent(ev.id)) "Cancelled \"${ev.title}\"."
+        else "Couldn't cancel \"${ev.title}\"."
+    }
+
+    private suspend fun addSubtask(context: Context, input: Map<*, *>): String {
+        val db = BiboDb.get(context)
+        val q = str(input, "task") ?: return "Which task?"
+        val steps = (input["steps"] as? List<*>)
+            ?.mapNotNull { (it as? String)?.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        if (steps.isEmpty()) return "No steps given."
+        val all = db.todos().allOnce()
+        val parents = all.filter { it.parentId == null && it.completedAt == null }
+        val parent = parents.firstOrNull { it.title.equals(q, true) }
+            ?: parents.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
+            ?: return "No open task matching \"$q\"."
+        val baseOrder = (all.filter { it.parentId == parent.id }.maxOfOrNull { it.sortOrder } ?: 0L) + 1
+        val now = System.currentTimeMillis()
+        steps.forEachIndexed { i, s ->
+            db.todos().insert(
+                TodoTask(title = s, parentId = parent.id, createdAt = now + i, sortOrder = baseOrder + i, goalId = parent.goalId)
+            )
+        }
+        return "Added ${steps.size} step${if (steps.size > 1) "s" else ""} to \"${parent.title}\"."
+    }
+
+    private suspend fun logFood(context: Context, input: Map<*, *>): String {
+        val label = str(input, "label") ?: return "Log what?"
+        val cal = (input["calories"] as? Number)?.toInt()?.coerceIn(0, 5000) ?: return "Need a calorie estimate."
+        val sugar = (input["sugar_g"] as? Number)?.toDouble()?.coerceIn(0.0, 500.0) ?: 0.0
+        val caf = (input["caffeine_mg"] as? Number)?.toInt()?.coerceIn(0, 1000) ?: 0
+        BiboDb.get(context).foods().insert(
+            FoodEntry(
+                epochDay = LocalDate.now().toEpochDay(), createdAt = System.currentTimeMillis(),
+                label = label, calories = cal, sugarG = sugar, caffeineMg = caf,
+            )
+        )
+        return "Logged \"$label\" (~$cal kcal${if (caf > 0) ", ${caf}mg caffeine" else ""})."
+    }
+
+    private suspend fun setHabit(context: Context, input: Map<*, *>): String {
+        val habit = str(input, "habit") ?: return "Which habit?"
+        val done = input["done"] == true
+        val db = BiboDb.get(context)
+        val day = LocalDate.now().toEpochDay()
+        val cur = db.habits().get(day) ?: HabitDay(day)
+        val next = when (habit) {
+            "showered" -> cur.copy(showered = done)
+            "clean_clothes" -> cur.copy(cleanClothes = done)
+            "worked_out" -> cur.copy(workedOut = done)
+            "prayed" -> cur.copy(prayed = done)
+            else -> return "Unknown habit \"$habit\"."
+        }
+        db.habits().upsert(next)
+        return "Marked ${habit.replace('_', ' ')} ${if (done) "done" else "not done"} for today."
+    }
+
+    private suspend fun startFocus(context: Context, input: Map<*, *>): String {
+        val intention = str(input, "intention") ?: return "Focus on what?"
+        val goal = matchGoal(BiboDb.get(context).goals().allOnce(), str(input, "goal"))
+        TimerController.startFocus(context, FocusConfig(intention = intention, goalId = goal?.id))
+        return "Focus started on \"$intention\"" + (goal?.let { " (goal: ${it.name})" } ?: "") +
+            " — it's timing now."
+    }
+
+    private fun stopTimerTool(context: Context, input: Map<*, *>): String {
+        if (!TimerController.isRunning(context)) return "No timer is running."
+        val title = TimerController.runningTitle(context)
+        TimerController.stopTimer(context, str(input, "reflection"))
+        return "Stopped \"$title\" — saved to the calendar."
     }
 
     /**
