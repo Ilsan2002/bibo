@@ -315,7 +315,9 @@ object MentorTools {
             .name("start_focus")
             .description(
                 "Start the shared focus timer on something (shows on the Focus page, notification, " +
-                    "and lock screen). Use when they say they're starting work on something now."
+                    "and lock screen). Use when they say they're starting work on something now. Set " +
+                    "block_distractions when they want to lock in — it silences the phone (DND) and " +
+                    "blocks the distracting apps they blocked last time."
             )
             .inputSchema(
                 Tool.InputSchema.builder()
@@ -323,6 +325,15 @@ object MentorTools {
                         Tool.InputSchema.Properties.builder()
                             .putAdditionalProperty("intention", strProp("What they're focusing on"))
                             .putAdditionalProperty("goal", strProp("Existing goal this serves, by name (optional)"))
+                            .putAdditionalProperty(
+                                "block_distractions",
+                                JsonValue.from(
+                                    mapOf(
+                                        "type" to "boolean",
+                                        "description" to "Silence the phone + block their usual distracting apps",
+                                    )
+                                )
+                            )
                             .build()
                     )
                     .required(listOf("intention"))
@@ -615,22 +626,27 @@ object MentorTools {
 
     private suspend fun editGoal(context: Context, input: Map<*, *>): String {
         val db = BiboDb.get(context)
-        val goal = matchGoal(db.goals().allOnce(), str(input, "name"))
+        // Reach archived goals too — editing a retired goal revives it.
+        val goal = matchGoal(db.goals().allWithArchived(), str(input, "name"))
             ?: return "No goal matching \"${str(input, "name")}\"."
         db.goals().update(
             goal.copy(
                 name = str(input, "new_name") ?: goal.name,
                 details = str(input, "details") ?: goal.details,
                 targetDate = day(input, "target_date") ?: goal.targetDate,
+                archived = false,
             )
         )
-        return "Updated goal \"${str(input, "new_name") ?: goal.name}\"."
+        val newName = str(input, "new_name") ?: goal.name
+        return if (goal.archived) "Restored and updated goal \"$newName\"."
+        else "Updated goal \"$newName\"."
     }
 
     private suspend fun deleteGoal(context: Context, input: Map<*, *>): String {
         val db = BiboDb.get(context)
-        val goal = matchGoal(db.goals().allOnce(), str(input, "name"))
+        val goal = matchGoal(db.goals().allWithArchived(), str(input, "name"))
             ?: return "No goal matching \"${str(input, "name")}\"."
+        if (goal.archived) return "Goal \"${goal.name}\" is already retired."
         db.goals().update(goal.copy(archived = true))
         return "Retired goal \"${goal.name}\" (its tasks remain, just without the folder)."
     }
@@ -734,9 +750,21 @@ object MentorTools {
     private suspend fun startFocus(context: Context, input: Map<*, *>): String {
         val intention = str(input, "intention") ?: return "Focus on what?"
         val goal = matchGoal(BiboDb.get(context).goals().allOnce(), str(input, "goal"))
-        TimerController.startFocus(context, FocusConfig(intention = intention, goalId = goal?.id))
+        val lockIn = input["block_distractions"] == true
+        val apps = if (lockIn) TimerController.lastBlockedApps(context) else emptySet()
+        TimerController.startFocus(
+            context,
+            FocusConfig(intention = intention, goalId = goal?.id, blockedApps = apps, dnd = lockIn),
+        )
+        val lock = when {
+            lockIn && apps.isNotEmpty() ->
+                " — phone silenced + ${apps.size} app${if (apps.size > 1) "s" else ""} blocked"
+            lockIn ->
+                " — phone silenced (no saved app-block list yet; block some apps once in Focus and I'll reuse them)"
+            else -> ""
+        }
         return "Focus started on \"$intention\"" + (goal?.let { " (goal: ${it.name})" } ?: "") +
-            " — it's timing now."
+            lock + ", timing now."
     }
 
     private fun stopTimerTool(context: Context, input: Map<*, *>): String {

@@ -142,6 +142,10 @@ interface GoalDao {
     @Query("SELECT * FROM goals WHERE archived = 0 ORDER BY createdAt")
     suspend fun allOnce(): List<Goal>
 
+    /** Every goal, including archived ones — so the mentor can edit or restore a retired goal. */
+    @Query("SELECT * FROM goals ORDER BY createdAt")
+    suspend fun allWithArchived(): List<Goal>
+
     @Query("SELECT * FROM goals WHERE archived = 0 AND targetDate BETWEEN :start AND :end")
     fun milestonesInRange(start: Long, end: Long): Flow<List<Goal>>
 }

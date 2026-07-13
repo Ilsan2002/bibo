@@ -46,6 +46,19 @@ object TimerController {
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    // The running-session prefs get wiped (clear()) on every start/stop, so the user's
+    // last-used block-list — the default the mentor reuses for "block distractions" — is
+    // kept in a small separate file that survives.
+    private const val DEFAULTS_PREFS = "bibo_focus_defaults"
+    private const val KEY_LAST_BLOCKED = "last_blocked_apps"
+
+    private fun defaultsPrefs(context: Context) =
+        context.getSharedPreferences(DEFAULTS_PREFS, Context.MODE_PRIVATE)
+
+    /** The apps the user blocked in their most recent focus session (empty if never used). */
+    fun lastBlockedApps(context: Context): Set<String> =
+        defaultsPrefs(context).getStringSet(KEY_LAST_BLOCKED, emptySet()) ?: emptySet()
+
     fun runningStart(context: Context): Long = prefs(context).getLong(KEY_START, 0L)
     fun runningTitle(context: Context): String = prefs(context).getString(KEY_TITLE, "") ?: ""
     fun isRunning(context: Context): Boolean = runningStart(context) > 0L
@@ -145,6 +158,11 @@ object TimerController {
             .putLong(KEY_PHASE_END, if (config.pomodoro) now + config.workMin * 60_000L else 0L)
             .putInt(KEY_POMOS, 0)
             .apply()
+        // Remember this block-list as the default so the mentor can reuse it later.
+        if (config.blockedApps.isNotEmpty()) {
+            defaultsPrefs(context).edit()
+                .putStringSet(KEY_LAST_BLOCKED, config.blockedApps).apply()
+        }
         if (config.dnd) FocusDnd.enable(context)
         TimerService.start(context)
         requestComment(context, config.intention.ifBlank { "Focus" }, config.goalId)
