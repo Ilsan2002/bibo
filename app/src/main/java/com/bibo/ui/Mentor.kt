@@ -10,6 +10,7 @@ import com.anthropic.models.messages.MessageCreateParams
 import com.anthropic.models.messages.MessageParam
 import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.ThinkingConfigAdaptive
+import com.anthropic.models.messages.ThinkingConfigDisabled
 import com.anthropic.models.messages.ToolResultBlockParam
 import com.anthropic.models.messages.ToolUseBlockParam
 import com.bibo.data.BiboDb
@@ -44,6 +45,14 @@ import kotlinx.coroutines.withContext
  * are re-derivable never need to be "remembered".
  */
 object Mentor {
+    /**
+     * Sonnet 5: 1M context, and cheaper per token than Opus. Note its tokenizer counts
+     * ~30% more tokens than Opus 4.8's for the same text, so the max-token budgets below
+     * carry extra headroom. Passed as a string — the SDK (2.34.0) predates the typed
+     * Model constant for it.
+     */
+    private const val MODEL = "claude-sonnet-5"
+
     private const val PREFS = "mentor"
     private const val KEY_API = "api_key"
     private const val KEY_MEMORY = "memory"
@@ -185,7 +194,7 @@ object Mentor {
                 var iterations = 0
                 while (iterations++ < MAX_TOOL_ITERATIONS) {
                     val builder = MessageCreateParams.builder()
-                        .model("claude-opus-4-8")
+                        .model(MODEL)
                         .maxTokens(4096L)
                         .thinking(ThinkingConfigAdaptive.builder().build())
                         .system(system)
@@ -289,10 +298,12 @@ object Mentor {
                 val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
 
                 // No thinking + small max_tokens: this runs inside a broadcast
-                // receiver's ~25s window, so keep the call snappy.
+                // receiver's ~25s window, so keep the call snappy. Thinking must be
+                // disabled explicitly — Sonnet 5 thinks by default when unset.
                 val builder = MessageCreateParams.builder()
-                    .model("claude-opus-4-8")
-                    .maxTokens(512L)
+                    .model(MODEL)
+                    .maxTokens(768L)
+                    .thinking(ThinkingConfigDisabled.builder().build())
                     .system(system)
                 historyParams(history).forEach { builder.addMessage(it) }
                 builder.addUserMessage(
@@ -415,8 +426,9 @@ object Mentor {
             try {
                 val resp = client.messages().create(
                     MessageCreateParams.builder()
-                        .model("claude-opus-4-8")
-                        .maxTokens(200L)
+                        .model(MODEL)
+                        .maxTokens(300L)
+                        .thinking(ThinkingConfigDisabled.builder().build())
                         .system(system)
                         .addUserMessage(user)
                         .build()
@@ -486,8 +498,9 @@ object Mentor {
 
         val out = client.messages().create(
             MessageCreateParams.builder()
-                .model("claude-opus-4-8")
-                .maxTokens(1024L)
+                .model(MODEL)
+                .maxTokens(1536L)
+                .thinking(ThinkingConfigDisabled.builder().build())
                 .addUserMessage(prompt)
                 .build()
         ).content()
