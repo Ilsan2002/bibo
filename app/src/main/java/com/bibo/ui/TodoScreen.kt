@@ -498,6 +498,13 @@ fun TodoScreen() {
                 haptics.confirm()
                 val parentId = parent?.id
                 val resolvedGoal = parent?.goalId ?: goalId
+                // A goal folder can be open (filtered) when the FAB is used. A new
+                // top-level task that doesn't belong to that goal would silently vanish
+                // under the active filter — it WAS added, just hidden. Clear the filter
+                // so what was just added is immediately visible.
+                if (parentId == null && filterGoalId != null && filterGoalId != resolvedGoal) {
+                    filterGoalId = null
+                }
                 scope.launch(Dispatchers.IO) {
                     val now2 = System.currentTimeMillis()
                     db.todos().insert(
@@ -804,7 +811,16 @@ private fun AddTaskSheet(
     var title by remember { mutableStateOf("") }
     var goalId by remember { mutableStateOf(initialGoalId) }
     var rewardCents by remember { mutableIntStateOf(0) }
+    // Guards against a double-add: the IME "Done" key and a lingering/second tap on the
+    // Add button can both fire for one keystroke sequence, inserting the task twice.
+    var submitted by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+
+    fun submit() {
+        if (submitted || title.isBlank()) return
+        submitted = true
+        onAdd(title.trim(), goalId, rewardCents)
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
@@ -824,9 +840,7 @@ private fun AddTaskSheet(
                 label = { Text("What needs doing?") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = {
-                    if (title.isNotBlank()) onAdd(title.trim(), goalId, rewardCents)
-                }),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester),
@@ -868,8 +882,8 @@ private fun AddTaskSheet(
                 }
             }
             Button(
-                onClick = { onAdd(title.trim(), goalId, rewardCents) },
-                enabled = title.isNotBlank(),
+                onClick = { submit() },
+                enabled = title.isNotBlank() && !submitted,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Add") }
         }

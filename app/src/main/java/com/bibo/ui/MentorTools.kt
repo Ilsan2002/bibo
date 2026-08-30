@@ -462,6 +462,8 @@ object MentorTools {
     private fun day(input: Map<*, *>, key: String): Long? =
         str(input, key)?.let { runCatching { LocalDate.parse(it).toEpochDay() }.getOrNull() }
 
+    private fun normalizeTitle(s: String) = s.trim().lowercase().trimEnd('.', '!', '?').trim()
+
     private fun matchGoal(goals: List<Goal>, q: String?): Goal? {
         if (q.isNullOrBlank()) return null
         return goals.firstOrNull { it.name.equals(q, true) }
@@ -472,11 +474,16 @@ object MentorTools {
         val db = BiboDb.get(context)
         val title = str(input, "title") ?: return "A task needs a title."
         // Hard duplicate guard: an identical open task means this was already created
-        // (a retried turn, or the model forgot). Refuse rather than double up.
+        // (a retried turn, or the model forgot). Refuse rather than double up. Compared
+        // on normalized text (case/whitespace/trailing punctuation stripped) so "Buy
+        // groceries" and "buy groceries." still count as the same task.
         val existingOpen = db.todos().allOnce()
-            .firstOrNull { it.parentId == null && it.completedAt == null && it.title.equals(title, true) }
+            .firstOrNull {
+                it.parentId == null && it.completedAt == null &&
+                    normalizeTitle(it.title) == normalizeTitle(title)
+            }
         if (existingOpen != null) {
-            return "\"$title\" is ALREADY on the list — not creating a duplicate. " +
+            return "\"${existingOpen.title}\" is ALREADY on the list — not creating a duplicate. " +
                 "Reference it, or use edit_task / delete_task to change it."
         }
         val subtasks = (input["subtasks"] as? List<*>)
