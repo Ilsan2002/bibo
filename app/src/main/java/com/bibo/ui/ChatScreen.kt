@@ -423,16 +423,16 @@ private fun KeySetupCard(onSave: (String) -> Unit, modifier: Modifier = Modifier
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Connect your mentor", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "The mentor runs on Claude. Paste an Anthropic API key " +
-                        "(console.anthropic.com → API keys). It's stored only on this phone " +
-                        "and used only for your mentor chats.",
+                    "The mentor runs on Kimi K3 via OpenRouter. Paste an OpenRouter API key " +
+                        "(openrouter.ai/keys). It's stored only on this phone and used only " +
+                        "for your mentor chats.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(
                     value = key,
                     onValueChange = { key = it },
-                    placeholder = { Text("sk-ant-…") },
+                    placeholder = { Text("sk-or-v1-…") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -451,12 +451,12 @@ private fun KeyDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -
     var key by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Anthropic API key") },
+        title = { Text("OpenRouter API key") },
         text = {
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
-                placeholder = { Text("sk-ant-…") },
+                placeholder = { Text("sk-or-v1-…") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )

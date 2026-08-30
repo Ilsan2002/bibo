@@ -34,18 +34,6 @@ android {
         compose = true
     }
 
-    // The Anthropic SDK's Apache HTTP jars each ship these metadata files;
-    // Android's resource merger refuses duplicates, so drop them from the APK.
-    packaging {
-        resources {
-            excludes += setOf(
-                "META-INF/DEPENDENCIES",
-                "META-INF/LICENSE*",
-                "META-INF/NOTICE*",
-                "META-INF/INDEX.LIST",
-            )
-        }
-    }
 }
 
 kotlin {
@@ -77,6 +65,6 @@ dependencies {
     implementation(libs.adaptive)
     implementation(libs.adaptive.layout)
     implementation(libs.adaptive.navigation)
-    implementation(libs.anthropic.java)
+    implementation(libs.okhttp)
     debugImplementation(libs.compose.ui.tooling)
 }

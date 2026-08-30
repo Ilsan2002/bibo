@@ -1,18 +1,6 @@
 package com.bibo.ui
 
 import android.content.Context
-import com.anthropic.client.AnthropicClient
-import com.anthropic.client.okhttp.AnthropicOkHttpClient
-import com.anthropic.errors.UnauthorizedException
-import com.anthropic.models.messages.ContentBlockParam
-import com.anthropic.models.messages.Message
-import com.anthropic.models.messages.MessageCreateParams
-import com.anthropic.models.messages.MessageParam
-import com.anthropic.models.messages.TextBlockParam
-import com.anthropic.models.messages.ThinkingConfigAdaptive
-import com.anthropic.models.messages.ThinkingConfigDisabled
-import com.anthropic.models.messages.ToolResultBlockParam
-import com.anthropic.models.messages.ToolUseBlockParam
 import com.bibo.data.BiboDb
 import com.bibo.data.ChatDay
 import com.bibo.data.ChatMessage
@@ -29,9 +17,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
- * The mentor chat engine: a Claude-backed coach that sees everything Bibo logs.
+ * The mentor chat engine: a Kimi K3-backed coach that sees everything Bibo logs.
  *
  * Context is managed in three layers so the conversation can run forever without
  * unbounded token growth:
@@ -46,12 +40,16 @@ import kotlinx.coroutines.withContext
  */
 object Mentor {
     /**
-     * Sonnet 5: 1M context, and cheaper per token than Opus. Note its tokenizer counts
-     * ~30% more tokens than Opus 4.8's for the same text, so the max-token budgets below
-     * carry extra headroom. Passed as a string — the SDK (2.34.0) predates the typed
-     * Model constant for it.
+     * Kimi K3 (Moonshot AI) via OpenRouter — chosen as the Sonnet-tier equivalent: same
+     * $3/$15-per-MTok list pricing as Claude Sonnet 5, matching ~1M context, and the
+     * strongest of the current Chinese flagships specifically on tool-heavy agentic work
+     * (the thing this app lives on). OpenRouter speaks OpenAI's chat-completions wire
+     * format, not Anthropic's Messages API, so this file talks to it directly over
+     * OkHttp/org.json rather than through an SDK — there's no Kotlin/Android SDK for
+     * OpenRouter and no Anthropic-compatible endpoint to point the old client at.
      */
-    private const val MODEL = "claude-sonnet-5"
+    private const val MODEL = "moonshotai/kimi-k3"
+    private const val OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
     private const val PREFS = "mentor"
     private const val KEY_API = "api_key"
@@ -91,8 +89,11 @@ object Mentor {
 
     private val sendLock = Mutex()
 
-    @Volatile
-    private var cachedClient: Pair<String, AnthropicClient>? = null
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder().callTimeout(Duration.ofSeconds(90)).build()
+    }
+
+    private class OpenRouterException(val code: Int, message: String) : Exception(message)
 
     // ---------------------------------------------------------------- prefs
 
@@ -104,7 +105,6 @@ object Mentor {
 
     fun setApiKey(context: Context, key: String) {
         prefs(context).edit().putString(KEY_API, key.trim()).apply()
-        cachedClient = null
     }
 
     fun memory(context: Context): String =
@@ -142,15 +142,66 @@ object Mentor {
         setMemory(context, trimmed.joinToString("\n"))
     }
 
-    private fun client(context: Context): AnthropicClient? {
-        val key = apiKey(context) ?: return null
-        cachedClient?.let { (k, c) -> if (k == key) return c }
-        val client = AnthropicOkHttpClient.builder()
-            .apiKey(key)
-            .timeout(Duration.ofSeconds(90))
+    /**
+     * One call to OpenRouter's OpenAI-compatible chat-completions endpoint. `messages` is
+     * the full turn history as role-tagged JSON objects (system/user/assistant/tool);
+     * `tools` is omitted entirely for the fast, no-action call sites. `reasoningEnabled`
+     * matters a lot here: Kimi K3 reasons by default, and a simple reply can burn 1000+
+     * reasoning tokens before it says anything — fine for the main chat loop, but the
+     * three fast paths (check-in, start-cheer, day-compaction) need it off both for cost
+     * and because check-in has to finish inside a ~25s broadcast-receiver window.
+     */
+    private fun openRouterChat(
+        apiKey: String,
+        messages: JSONArray,
+        tools: JSONArray?,
+        maxTokens: Int,
+        reasoningEnabled: Boolean,
+    ): JSONObject {
+        val body = JSONObject().apply {
+            put("model", MODEL)
+            put("messages", messages)
+            put("max_tokens", maxTokens)
+            if (!reasoningEnabled) put("reasoning", JSONObject().put("enabled", false))
+            if (tools != null) {
+                put("tools", tools)
+                put("tool_choice", "auto")
+            }
+        }
+        val request = Request.Builder()
+            .url(OPENROUTER_URL)
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()
-        cachedClient = key to client
-        return client
+        httpClient.newCall(request).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            val json = runCatching { JSONObject(text) }.getOrElse {
+                throw OpenRouterException(resp.code, "Bad response (HTTP ${resp.code}): ${text.take(200)}")
+            }
+            if (!resp.isSuccessful || json.has("error")) {
+                val err = json.optJSONObject("error")
+                throw OpenRouterException(resp.code, err?.optString("message")?.ifBlank { null } ?: "HTTP ${resp.code}")
+            }
+            return json
+        }
+    }
+
+    private fun messageContent(response: JSONObject): String =
+        response.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+            .optString("content", "").trim()
+
+    private fun JSONObject.toMap(): Map<String, Any?> {
+        val map = mutableMapOf<String, Any?>()
+        keys().forEach { k -> map[k] = jsonToKotlin(get(k)) }
+        return map
+    }
+
+    private fun jsonToKotlin(v: Any?): Any? = when (v) {
+        is JSONObject -> v.toMap()
+        is JSONArray -> (0 until v.length()).map { jsonToKotlin(v.get(it)) }
+        JSONObject.NULL -> null
+        else -> v
     }
 
     // ----------------------------------------------------------------- send
@@ -164,7 +215,7 @@ object Mentor {
         sendLock.withLock {
             val db = BiboDb.get(context)
             val today = LocalDate.now().toEpochDay()
-            val client = client(context)
+            val key = apiKey(context)
                 ?: return@withLock Result.failure(IllegalStateException("No API key set"))
 
             db.chat().insert(
@@ -175,7 +226,7 @@ object Mentor {
             )
 
             // Roll finished days into episodic + semantic memory before answering.
-            runCatching { compactPendingDays(context, client, today) }
+            runCatching { compactPendingDays(context, key, today) }
 
             // Every tool action this turn gets logged here and PERSISTED with the reply
             // (or on its own if the turn then fails). Without this, a crash after tools ran
@@ -185,7 +236,8 @@ object Mentor {
             try {
                 val system = buildSystemPrompt(context, today)
                 val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
-                val messages = historyParams(history).toMutableList()
+                val messages = historyParams(system, history)
+                val tools = MentorTools.definitions()
 
                 // Agentic loop: the model may call tools (create task/goal/event, complete
                 // task) before its final text. Execute each against Room, feed results back,
@@ -193,48 +245,47 @@ object Mentor {
                 var reply = "…"
                 var iterations = 0
                 while (iterations++ < MAX_TOOL_ITERATIONS) {
-                    val builder = MessageCreateParams.builder()
-                        .model(MODEL)
-                        .maxTokens(4096L)
-                        .thinking(ThinkingConfigAdaptive.builder().build())
-                        .system(system)
-                    MentorTools.definitions().forEach { builder.addTool(it) }
-                    messages.forEach { builder.addMessage(it) }
+                    val response = openRouterChat(key, messages, tools, maxTokens = 4096, reasoningEnabled = true)
+                    val message = response.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+                    val toolCalls = message.optJSONArray("tool_calls")
 
-                    val response = client.messages().create(builder.build())
-                    val toolUses = response.content().mapNotNull { it.toolUse().orElse(null) }
-
-                    if (toolUses.isEmpty()) {
-                        reply = responseText(response).ifBlank { "…" }
+                    if (toolCalls == null || toolCalls.length() == 0) {
+                        reply = message.optString("content", "").trim().ifBlank { "…" }
                         break
                     }
 
-                    // Echo the assistant turn (text + tool_use blocks) verbatim, then run
-                    // the tools and return their results as the next user turn.
-                    messages += MessageParam.builder()
-                        .role(MessageParam.Role.ASSISTANT)
-                        .contentOfBlockParams(assistantEcho(response))
-                        .build()
+                    // Echo the assistant turn (text + tool_calls) verbatim, then run the
+                    // tools and return their results as "tool"-role turns, keyed by the
+                    // same call IDs the model just handed us.
+                    messages.put(
+                        JSONObject().apply {
+                            put("role", "assistant")
+                            put("content", if (message.isNull("content")) JSONObject.NULL else message.opt("content"))
+                            put("tool_calls", toolCalls)
+                        }
+                    )
 
-                    val results = toolUses.map { tu ->
-                        val inputMap = runCatching { tu._input().convert(Map::class.java) as? Map<*, *> }
-                            .getOrNull() ?: emptyMap<Any, Any>()
-                        val result = MentorTools.execute(context, tu.name(), inputMap)
+                    for (i in 0 until toolCalls.length()) {
+                        val tc = toolCalls.getJSONObject(i)
+                        val fn = tc.getJSONObject("function")
+                        val name = fn.getString("name")
+                        val inputMap = runCatching { JSONObject(fn.optString("arguments", "{}")).toMap() }
+                            .getOrDefault(emptyMap())
+                        val result = MentorTools.execute(context, name, inputMap)
                         // Receipts are for state-changing actions only — reads and quiet
                         // memory work would just be noise.
-                        if (tu.name() !in setOf("remember", "edit_memory", "search_history", "recall_day") &&
+                        if (name !in setOf("remember", "edit_memory", "search_history", "recall_day") &&
                             result.isNotBlank()
                         ) {
                             actionLog += result
                         }
-                        ContentBlockParam.ofToolResult(
-                            ToolResultBlockParam.builder().toolUseId(tu.id()).content(result).build()
+                        messages.put(
+                            JSONObject()
+                                .put("role", "tool")
+                                .put("tool_call_id", tc.getString("id"))
+                                .put("content", result)
                         )
                     }
-                    messages += MessageParam.builder()
-                        .role(MessageParam.Role.USER)
-                        .contentOfBlockParams(results)
-                        .build()
                 }
 
                 // The action receipt rides inside the stored reply, so future turns (and the
@@ -260,8 +311,11 @@ object Mentor {
                         )
                     )
                 }
-                val friendly = when (e) {
-                    is UnauthorizedException -> "API key was rejected — check it in settings (key icon)."
+                val friendly = when {
+                    e is OpenRouterException && (e.code == 401 || e.code == 403) ->
+                        "API key was rejected — check it in settings (key icon)."
+                    e is OpenRouterException && e.code == 402 ->
+                        "OpenRouter credits are out — top up at openrouter.ai/credits."
                     else -> e.message?.take(200) ?: "Couldn't reach the mentor."
                 }
                 db.chat().insert(
@@ -282,7 +336,7 @@ object Mentor {
      */
     suspend fun checkIn(context: Context): String? = withContext(Dispatchers.IO) {
         sendLock.withLock {
-            val client = client(context) ?: return@withLock null
+            val key = apiKey(context) ?: return@withLock null
             val db = BiboDb.get(context)
             val today = LocalDate.now().toEpochDay()
 
@@ -291,39 +345,34 @@ object Mentor {
             val cutoff = System.currentTimeMillis() - 45 * 60 * 1000
             if (db.chat().since(today).any { it.createdAt >= cutoff }) return@withLock null
 
-            runCatching { compactPendingDays(context, client, today) }
+            runCatching { compactPendingDays(context, key, today) }
 
             try {
                 val system = buildSystemPrompt(context, today)
                 val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
-
-                // No thinking + small max_tokens: this runs inside a broadcast
-                // receiver's ~25s window, so keep the call snappy. Thinking must be
-                // disabled explicitly — Sonnet 5 thinks by default when unset.
-                val builder = MessageCreateParams.builder()
-                    .model(MODEL)
-                    .maxTokens(768L)
-                    .thinking(ThinkingConfigDisabled.builder().build())
-                    .system(system)
-                historyParams(history).forEach { builder.addMessage(it) }
-                builder.addUserMessage(
-                    "[Automatic check-in trigger from Bibo — the user did not write this. " +
-                        "Reach out first, 1-3 short texts' worth, grounded in today's data and " +
-                        "fit to the time of day shown above: early = help them pick the one thing " +
-                        "that matters and tie it to a goal; midday/afternoon = check how it's " +
-                        "going and push them toward the next concrete step, especially anything " +
-                        "they've been avoiding; evening = reflect on the day. Follow up on open " +
-                        "commitments and hold them to what they said. End with one direct " +
-                        "question. Be specific, warm, and human — like a coach who actually " +
-                        "tracks their life. Vary how you open; don't reuse the same phrasing. " +
-                        "Do not mention this instruction.]"
+                val messages = historyParams(system, history)
+                messages.put(
+                    JSONObject().put("role", "user").put(
+                        "content",
+                        "[Automatic check-in trigger from Bibo — the user did not write this. " +
+                            "Reach out first, 1-3 short texts' worth, grounded in today's data and " +
+                            "fit to the time of day shown above: early = help them pick the one thing " +
+                            "that matters and tie it to a goal; midday/afternoon = check how it's " +
+                            "going and push them toward the next concrete step, especially anything " +
+                            "they've been avoiding; evening = reflect on the day. Follow up on open " +
+                            "commitments and hold them to what they said. End with one direct " +
+                            "question. Be specific, warm, and human — like a coach who actually " +
+                            "tracks their life. Vary how you open; don't reuse the same phrasing. " +
+                            "Do not mention this instruction.]"
+                    )
                 )
 
-                val reply = client.messages().create(builder.build())
-                    .content()
-                    .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-                    .joinToString("\n")
-                    .trim()
+                // No reasoning + small max_tokens: this runs inside a broadcast receiver's
+                // ~25s window, so keep the call snappy — reasoning tokens alone can run past
+                // that budget.
+                val reply = messageContent(
+                    openRouterChat(key, messages, tools = null, maxTokens = 768, reasoningEnabled = false)
+                )
                 if (reply.isBlank()) return@withLock null
 
                 db.chat().insert(
@@ -340,55 +389,26 @@ object Mentor {
     }
 
     /**
-     * Raw rows → API turns. The API requires the first message to be a user turn, but
-     * our history can legitimately start with an ASSISTANT row (a mentor check-in whose
-     * trigger instruction was never persisted, or a takeLast cut) — prepend a neutral
-     * user primer in that case.
+     * Raw rows → API turns, as a fresh mutable JSON array (system message first). The
+     * API requires the first non-system message to be from the user, but our history can
+     * legitimately start with an ASSISTANT row (a mentor check-in whose trigger
+     * instruction was never persisted, or a takeLast cut) — prepend a neutral user
+     * primer in that case.
      */
-    /** The plain-text portion of a response, joined across text blocks. */
-    private fun responseText(response: Message): String =
-        response.content()
-            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-            .joinToString("\n")
-            .trim()
-
-    /**
-     * Rebuild the assistant turn (text + tool_use blocks) as params so it can be echoed
-     * back — the API requires the tool_use blocks to precede their tool_result blocks.
-     * Thinking blocks are dropped; they aren't required for the follow-up turn here.
-     */
-    private fun assistantEcho(response: Message): List<ContentBlockParam> =
-        response.content().mapNotNull { block ->
-            block.text().map { t ->
-                ContentBlockParam.ofText(TextBlockParam.builder().text(t.text()).build())
-            }.orElseGet {
-                block.toolUse().map { tu ->
-                    ContentBlockParam.ofToolUse(
-                        ToolUseBlockParam.builder()
-                            .id(tu.id())
-                            .name(tu.name())
-                            .input(tu._input().convert(ToolUseBlockParam.Input::class.java)!!)
-                            .build()
-                    )
-                }.orElse(null)
-            }
-        }
-
-    private fun historyParams(history: List<ChatMessage>): List<MessageParam> {
-        val params = mutableListOf<MessageParam>()
+    private fun historyParams(system: String, history: List<ChatMessage>): JSONArray {
+        val messages = JSONArray()
+        messages.put(JSONObject().put("role", "system").put("content", system))
         if (history.firstOrNull()?.role == "ASSISTANT") {
-            params += MessageParam.builder()
-                .role(MessageParam.Role.USER)
-                .content("[Conversation continues from earlier.]")
-                .build()
+            messages.put(JSONObject().put("role", "user").put("content", "[Conversation continues from earlier.]"))
         }
         history.forEach { m ->
-            params += MessageParam.builder()
-                .role(if (m.role == "USER") MessageParam.Role.USER else MessageParam.Role.ASSISTANT)
-                .content(m.content)
-                .build()
+            messages.put(
+                JSONObject()
+                    .put("role", if (m.role == "USER") "user" else "assistant")
+                    .put("content", m.content)
+            )
         }
-        return params
+        return messages
     }
 
     /**
@@ -399,7 +419,7 @@ object Mentor {
      */
     suspend fun startComment(context: Context, title: String, goalId: Long?): String? =
         withContext(Dispatchers.IO) {
-            val client = client(context) ?: return@withContext null
+            val key = apiKey(context) ?: return@withContext null
             val db = BiboDb.get(context)
             val goals = runCatching { db.goals().allOnce() }.getOrDefault(emptyList())
             val goalName = goalId?.let { id -> goals.firstOrNull { it.id == id }?.name }
@@ -424,16 +444,12 @@ object Mentor {
                 (goalName?.let { " (part of the goal: $it)" } ?: "") + ". Cheer them on."
 
             try {
-                val resp = client.messages().create(
-                    MessageCreateParams.builder()
-                        .model(MODEL)
-                        .maxTokens(300L)
-                        .thinking(ThinkingConfigDisabled.builder().build())
-                        .system(system)
-                        .addUserMessage(user)
-                        .build()
-                )
-                responseText(resp).ifBlank { null }
+                val messages = JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", system))
+                    .put(JSONObject().put("role", "user").put("content", user))
+                messageContent(
+                    openRouterChat(key, messages, tools = null, maxTokens = 300, reasoningEnabled = false)
+                ).ifBlank { null }
             } catch (_: Throwable) {
                 null
             }
@@ -446,12 +462,12 @@ object Mentor {
      * compacted by the model (which also rewrites the memory notes); data-only days
      * get a free local digest so the mentor still knows what happened.
      */
-    private suspend fun compactPendingDays(context: Context, client: AnthropicClient, today: Long) {
+    private suspend fun compactPendingDays(context: Context, apiKey: String, today: Long) {
         val db = BiboDb.get(context)
 
         db.chat().undigestedDays(today).forEach { day ->
             if (day >= today - MAX_COMPACT_AGE_DAYS) {
-                llmCompactDay(context, client, day)
+                llmCompactDay(context, apiKey, day)
             } else {
                 db.chatDays().upsert(ChatDay(day, localDigest(context, day)))
             }
@@ -468,7 +484,7 @@ object Mentor {
         }
     }
 
-    private suspend fun llmCompactDay(context: Context, client: AnthropicClient, day: Long) {
+    private suspend fun llmCompactDay(context: Context, apiKey: String, day: Long) {
         val db = BiboDb.get(context)
         val transcript = db.chat().forDay(day).joinToString("\n") { m ->
             (if (m.role == "USER") "User: " else "Mentor: ") + m.content
@@ -496,17 +512,13 @@ object Mentor {
             commitments with dates. Carry forward what still matters, drop stale items.
         """.trimIndent()
 
-        val out = client.messages().create(
-            MessageCreateParams.builder()
-                .model(MODEL)
-                .maxTokens(1536L)
-                .thinking(ThinkingConfigDisabled.builder().build())
-                .addUserMessage(prompt)
-                .build()
-        ).content()
-            .mapNotNull { block -> block.text().map { it.text() }.orElse(null) }
-            .joinToString("\n")
-            .trim()
+        val out = messageContent(
+            openRouterChat(
+                apiKey,
+                JSONArray().put(JSONObject().put("role", "user").put("content", prompt)),
+                tools = null, maxTokens = 1536, reasoningEnabled = false,
+            )
+        )
 
         val digest = out.substringAfter("DIGEST:", "").substringBefore("MEMORY:").trim()
             .ifBlank { out.take(500).ifBlank { localDigest(context, day) } }

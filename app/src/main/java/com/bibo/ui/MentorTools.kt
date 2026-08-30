@@ -1,8 +1,6 @@
 package com.bibo.ui
 
 import android.content.Context
-import com.anthropic.core.JsonValue
-import com.anthropic.models.messages.Tool
 import com.bibo.data.ActivityBlock
 import com.bibo.data.BiboDb
 import com.bibo.data.DeviceCalendarEvent
@@ -14,6 +12,8 @@ import com.bibo.data.HabitDay
 import com.bibo.data.TimerController
 import com.bibo.data.TaskReminders
 import com.bibo.data.TodoTask
+import org.json.JSONArray
+import org.json.JSONObject
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -34,398 +34,248 @@ object MentorTools {
         0xFF00639B.toInt(), 0xFF8C4A00.toInt(), 0xFF6D4AFF.toInt(),
     )
 
-    private fun strProp(desc: String) =
-        JsonValue.from(mapOf("type" to "string", "description" to desc))
+    // --- OpenAI function-calling schema helpers (OpenRouter speaks this shape, not
+    // Anthropic's tool_use format) ---
+    private fun strProp(desc: String) = JSONObject().put("type", "string").put("description", desc)
+    private fun numProp(desc: String) = JSONObject().put("type", "number").put("description", desc)
+    private fun boolProp(desc: String) = JSONObject().put("type", "boolean").put("description", desc)
+    private fun arrProp(desc: String) =
+        JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")).put("description", desc)
 
-    fun definitions(): List<Tool> = listOf(
-        Tool.builder()
-            .name("create_task")
-            .description(
+    private fun tool(name: String, description: String, required: List<String> = emptyList(), props: JSONObject.() -> Unit): JSONObject {
+        val parameters = JSONObject()
+            .put("type", "object")
+            .put("properties", JSONObject().apply(props))
+            .put("required", JSONArray(required))
+        val function = JSONObject().put("name", name).put("description", description).put("parameters", parameters)
+        return JSONObject().put("type", "function").put("function", function)
+    }
+
+    fun definitions(): JSONArray = JSONArray().apply {
+        put(
+            tool(
+                "create_task",
                 "Create a to-do task for the user. Break anything non-trivial into the " +
                     "smallest concrete first steps and pass them as subtasks — a big task " +
                     "feels doable once it's split up. File it under a goal when it clearly " +
-                    "advances one."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Short title of the overall task"))
-                            .putAdditionalProperty(
-                                "subtasks",
-                                JsonValue.from(
-                                    mapOf(
-                                        "type" to "array",
-                                        "items" to mapOf("type" to "string"),
-                                        "description" to "Ordered smallest concrete steps to finish it",
-                                    )
-                                )
-                            )
-                            .putAdditionalProperty("goal", strProp("Name of an existing goal to file this under (optional)"))
-                            .putAdditionalProperty("due_date", strProp("Due date as YYYY-MM-DD (optional)"))
-                            .putAdditionalProperty("reminder", strProp("When to nudge them, as 'YYYY-MM-DD HH:mm' 24h (optional)"))
-                            .putAdditionalProperty(
-                                "reminder_note",
-                                strProp(
-                                    "One motivating line for the reminder that ties this small step to the " +
-                                        "bigger goal (e.g. 'Open the laptop and make the first call — this is " +
-                                        "what kicks off your first client'). Required if reminder is set."
-                                )
-                            )
-                            .putAdditionalProperty(
-                                "reward_dollars",
-                                JsonValue.from(
-                                    mapOf(
-                                        "type" to "number",
-                                        "description" to "Treat-money reward for finishing, by difficulty: ~1 " +
-                                            "for a quick task, 3 medium, 5 hard, 10 for a big one (optional).",
-                                    )
-                                )
-                            )
-                            .build()
+                    "advances one.",
+                listOf("title"),
+            ) {
+                put("title", strProp("Short title of the overall task"))
+                put("subtasks", arrProp("Ordered smallest concrete steps to finish it"))
+                put("goal", strProp("Name of an existing goal to file this under (optional)"))
+                put("due_date", strProp("Due date as YYYY-MM-DD (optional)"))
+                put("reminder", strProp("When to nudge them, as 'YYYY-MM-DD HH:mm' 24h (optional)"))
+                put(
+                    "reminder_note",
+                    strProp(
+                        "One motivating line for the reminder that ties this small step to the " +
+                            "bigger goal (e.g. 'Open the laptop and make the first call — this is " +
+                            "what kicks off your first client'). Required if reminder is set."
                     )
-                    .required(listOf("title"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("create_goal")
-            .description("Create a long-term goal folder. Capture the why in details when the user shares it.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("name", strProp("Short name of the goal"))
-                            .putAdditionalProperty("details", strProp("Description and why it matters to them (optional)"))
-                            .putAdditionalProperty("target_date", strProp("Target date as YYYY-MM-DD (optional)"))
-                            .build()
+                )
+                put(
+                    "reward_dollars",
+                    numProp(
+                        "Treat-money reward for finishing, by difficulty: ~1 for a quick task, " +
+                            "3 medium, 5 hard, 10 for a big one (optional)."
                     )
-                    .required(listOf("name"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("add_calendar_event")
-            .description("Put an event on the user's calendar (their Google Calendar if connected).")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Event title"))
-                            .putAdditionalProperty("date", strProp("Date as YYYY-MM-DD"))
-                            .putAdditionalProperty("start_time", strProp("Start time as HH:mm (24h)"))
-                            .putAdditionalProperty("end_time", strProp("End time as HH:mm (24h); optional, defaults to +1h"))
-                            .build()
-                    )
-                    .required(listOf("title", "date", "start_time"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("complete_task")
-            .description("Mark one of the user's open tasks done, matched by its title.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Title (or part of it) of the task to complete"))
-                            .build()
-                    )
-                    .required(listOf("title"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("delete_task")
-            .description(
+                )
+            }
+        )
+        put(
+            tool("create_goal", "Create a long-term goal folder. Capture the why in details when the user shares it.", listOf("name")) {
+                put("name", strProp("Short name of the goal"))
+                put("details", strProp("Description and why it matters to them (optional)"))
+                put("target_date", strProp("Target date as YYYY-MM-DD (optional)"))
+            }
+        )
+        put(
+            tool(
+                "add_calendar_event",
+                "Put an event on the user's calendar (their Google Calendar if connected).",
+                listOf("title", "date", "start_time"),
+            ) {
+                put("title", strProp("Event title"))
+                put("date", strProp("Date as YYYY-MM-DD"))
+                put("start_time", strProp("Start time as HH:mm (24h)"))
+                put("end_time", strProp("End time as HH:mm (24h); optional, defaults to +1h"))
+            }
+        )
+        put(
+            tool("complete_task", "Mark one of the user's open tasks done, matched by its title.", listOf("title")) {
+                put("title", strProp("Title (or part of it) of the task to complete"))
+            }
+        )
+        put(
+            tool(
+                "delete_task",
                 "Delete a task (and its subtasks) by title — for clearing duplicates or things " +
                     "that no longer matter. Deletes one match per call and tells you how many " +
                     "similar ones remain, so call it again to remove more (e.g. to dedupe, delete " +
-                    "the extras and keep one). Set all_matching to true to remove every match at once."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Title (or part of it) of the task to delete"))
-                            .putAdditionalProperty(
-                                "all_matching",
-                                JsonValue.from(mapOf("type" to "boolean", "description" to "Delete every task matching the title (optional)"))
-                            )
-                            .build()
-                    )
-                    .required(listOf("title"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("edit_task")
-            .description("Change an existing task — rename it, re-file it under a goal, set a due date, or set its reward.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Current title (or part of it) of the task to edit"))
-                            .putAdditionalProperty("new_title", strProp("New title (optional)"))
-                            .putAdditionalProperty("goal", strProp("Move it under this existing goal by name (optional)"))
-                            .putAdditionalProperty("due_date", strProp("Set the due date as YYYY-MM-DD (optional)"))
-                            .putAdditionalProperty(
-                                "reward_dollars",
-                                JsonValue.from(mapOf("type" to "number", "description" to "Set the treat-money reward in dollars (optional)"))
-                            )
-                            .build()
-                    )
-                    .required(listOf("title"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("edit_goal")
-            .description("Change a long-term goal — rename it, rewrite its details/why, or set its target date.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("name", strProp("Current name (or part) of the goal"))
-                            .putAdditionalProperty("new_name", strProp("New name (optional)"))
-                            .putAdditionalProperty("details", strProp("New description / why it matters (optional)"))
-                            .putAdditionalProperty("target_date", strProp("New target date YYYY-MM-DD (optional)"))
-                            .build()
-                    )
-                    .required(listOf("name"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("delete_goal")
-            .description("Retire a goal that no longer matters (it's archived; its tasks stay but lose the folder).")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("name", strProp("Name (or part) of the goal to retire"))
-                            .build()
-                    )
-                    .required(listOf("name"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("edit_calendar_event")
-            .description(
+                    "the extras and keep one). Set all_matching to true to remove every match at once.",
+                listOf("title"),
+            ) {
+                put("title", strProp("Title (or part of it) of the task to delete"))
+                put("all_matching", boolProp("Delete every task matching the title (optional)"))
+            }
+        )
+        put(
+            tool(
+                "edit_task",
+                "Change an existing task — rename it, re-file it under a goal, set a due date, or set its reward.",
+                listOf("title"),
+            ) {
+                put("title", strProp("Current title (or part of it) of the task to edit"))
+                put("new_title", strProp("New title (optional)"))
+                put("goal", strProp("Move it under this existing goal by name (optional)"))
+                put("due_date", strProp("Set the due date as YYYY-MM-DD (optional)"))
+                put("reward_dollars", numProp("Set the treat-money reward in dollars (optional)"))
+            }
+        )
+        put(
+            tool(
+                "edit_goal",
+                "Change a long-term goal — rename it, rewrite its details/why, or set its target date.",
+                listOf("name"),
+            ) {
+                put("name", strProp("Current name (or part) of the goal"))
+                put("new_name", strProp("New name (optional)"))
+                put("details", strProp("New description / why it matters (optional)"))
+                put("target_date", strProp("New target date YYYY-MM-DD (optional)"))
+            }
+        )
+        put(
+            tool(
+                "delete_goal",
+                "Retire a goal that no longer matters (it's archived; its tasks stay but lose the folder).",
+                listOf("name"),
+            ) {
+                put("name", strProp("Name (or part) of the goal to retire"))
+            }
+        )
+        put(
+            tool(
+                "edit_calendar_event",
                 "Move or rename an upcoming calendar event (next 14 days), matched by title. " +
-                    "Recurring Google events can't be edited — you'll be told if so."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Title (or part) of the event to change"))
-                            .putAdditionalProperty("new_title", strProp("New title (optional)"))
-                            .putAdditionalProperty("new_date", strProp("New date YYYY-MM-DD (optional)"))
-                            .putAdditionalProperty("new_start_time", strProp("New start HH:mm 24h (optional)"))
-                            .putAdditionalProperty("new_end_time", strProp("New end HH:mm 24h (optional)"))
-                            .build()
-                    )
-                    .required(listOf("title"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("delete_calendar_event")
-            .description("Cancel an upcoming calendar event (next 14 days), matched by title.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("title", strProp("Title (or part) of the event to cancel"))
-                            .build()
-                    )
-                    .required(listOf("title"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("add_subtask")
-            .description("Add one or more steps to an EXISTING task (appended after its current steps).")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("task", strProp("Title (or part) of the existing task"))
-                            .putAdditionalProperty(
-                                "steps",
-                                JsonValue.from(
-                                    mapOf(
-                                        "type" to "array", "items" to mapOf("type" to "string"),
-                                        "description" to "The step(s) to add, in order",
-                                    )
-                                )
-                            )
-                            .build()
-                    )
-                    .required(listOf("task", "steps"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("log_food")
-            .description(
+                    "Recurring Google events can't be edited — you'll be told if so.",
+                listOf("title"),
+            ) {
+                put("title", strProp("Title (or part) of the event to change"))
+                put("new_title", strProp("New title (optional)"))
+                put("new_date", strProp("New date YYYY-MM-DD (optional)"))
+                put("new_start_time", strProp("New start HH:mm 24h (optional)"))
+                put("new_end_time", strProp("New end HH:mm 24h (optional)"))
+            }
+        )
+        put(
+            tool(
+                "delete_calendar_event",
+                "Cancel an upcoming calendar event (next 14 days), matched by title.",
+                listOf("title"),
+            ) {
+                put("title", strProp("Title (or part) of the event to cancel"))
+            }
+        )
+        put(
+            tool(
+                "add_subtask",
+                "Add one or more steps to an EXISTING task (appended after its current steps).",
+                listOf("task", "steps"),
+            ) {
+                put("task", strProp("Title (or part) of the existing task"))
+                put("steps", arrProp("The step(s) to add, in order"))
+            }
+        )
+        put(
+            tool(
+                "log_food",
                 "Log something they ate or drank today (they mention food in chat -> log it). " +
-                    "YOU estimate the nutrition numbers."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("label", strProp("Short name, e.g. 'burger and fries'"))
-                            .putAdditionalProperty("calories", JsonValue.from(mapOf("type" to "number", "description" to "Estimated kcal")))
-                            .putAdditionalProperty("sugar_g", JsonValue.from(mapOf("type" to "number", "description" to "Estimated sugar grams (optional)")))
-                            .putAdditionalProperty("caffeine_mg", JsonValue.from(mapOf("type" to "number", "description" to "Estimated caffeine mg (optional)")))
-                            .build()
-                    )
-                    .required(listOf("label", "calories"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("set_habit")
-            .description("Mark one of today's habits done or not: showered, clean_clothes, worked_out, prayed.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty(
-                                "habit",
-                                JsonValue.from(
-                                    mapOf(
-                                        "type" to "string",
-                                        "enum" to listOf("showered", "clean_clothes", "worked_out", "prayed"),
-                                    )
-                                )
-                            )
-                            .putAdditionalProperty("done", JsonValue.from(mapOf("type" to "boolean")))
-                            .build()
-                    )
-                    .required(listOf("habit", "done"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("start_focus")
-            .description(
+                    "YOU estimate the nutrition numbers.",
+                listOf("label", "calories"),
+            ) {
+                put("label", strProp("Short name, e.g. 'burger and fries'"))
+                put("calories", numProp("Estimated kcal"))
+                put("sugar_g", numProp("Estimated sugar grams (optional)"))
+                put("caffeine_mg", numProp("Estimated caffeine mg (optional)"))
+            }
+        )
+        put(
+            tool(
+                "set_habit",
+                "Mark one of today's habits done or not: showered, clean_clothes, worked_out, prayed.",
+                listOf("habit", "done"),
+            ) {
+                put(
+                    "habit",
+                    JSONObject().put("type", "string")
+                        .put("enum", JSONArray(listOf("showered", "clean_clothes", "worked_out", "prayed")))
+                )
+                put("done", JSONObject().put("type", "boolean"))
+            }
+        )
+        put(
+            tool(
+                "start_focus",
                 "Start the shared focus timer on something (shows on the Focus page, notification, " +
                     "and lock screen). Use when they say they're starting work on something now. Set " +
                     "block_distractions when they want to lock in — it silences the phone (DND) and " +
-                    "blocks the distracting apps they blocked last time."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("intention", strProp("What they're focusing on"))
-                            .putAdditionalProperty("goal", strProp("Existing goal this serves, by name (optional)"))
-                            .putAdditionalProperty(
-                                "block_distractions",
-                                JsonValue.from(
-                                    mapOf(
-                                        "type" to "boolean",
-                                        "description" to "Silence the phone + block their usual distracting apps",
-                                    )
-                                )
-                            )
-                            .build()
-                    )
-                    .required(listOf("intention"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("stop_timer")
-            .description("Stop the currently running timer/focus session; it's saved to the calendar.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("reflection", strProp("One-line note on how it went (optional)"))
-                            .build()
-                    )
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("search_history")
-            .description(
+                    "blocks the distracting apps they blocked last time.",
+                listOf("intention"),
+            ) {
+                put("intention", strProp("What they're focusing on"))
+                put("goal", strProp("Existing goal this serves, by name (optional)"))
+                put("block_distractions", boolProp("Silence the phone + block their usual distracting apps"))
+            }
+        )
+        put(
+            tool("stop_timer", "Stop the currently running timer/focus session; it's saved to the calendar.") {
+                put("reflection", strProp("One-line note on how it went (optional)"))
+            }
+        )
+        put(
+            tool(
+                "search_history",
                 "Search EVERYTHING you and the user have ever said, all past day summaries, " +
                     "and your memory notes — far beyond what's in your context. Use it whenever " +
                     "they reference something you don't see (an old decision, plan, name, or " +
                     "number) before saying you don't remember. Keyword or short phrase; if no " +
-                    "hits, retry with a different word."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("query", strProp("Keyword or short phrase to search for"))
-                            .build()
-                    )
-                    .required(listOf("query"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("recall_day")
-            .description("Pull up a specific past day: its summary plus the full conversation from that date.")
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("date", strProp("The day to recall, as YYYY-MM-DD"))
-                            .build()
-                    )
-                    .required(listOf("date"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("edit_memory")
-            .description(
+                    "hits, retry with a different word.",
+                listOf("query"),
+            ) {
+                put("query", strProp("Keyword or short phrase to search for"))
+            }
+        )
+        put(
+            tool("recall_day", "Pull up a specific past day: its summary plus the full conversation from that date.", listOf("date")) {
+                put("date", strProp("The day to recall, as YYYY-MM-DD"))
+            }
+        )
+        put(
+            tool(
+                "edit_memory",
                 "Rewrite your long-term memory notes in full — to correct a fact, drop stale " +
-                    "items, or reorganize. Pass the complete new notes; they replace the old ones."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("notes", strProp("The complete new memory notes (max ~180 words)"))
-                            .build()
-                    )
-                    .required(listOf("notes"))
-                    .build()
-            )
-            .build(),
-        Tool.builder()
-            .name("remember")
-            .description(
+                    "items, or reorganize. Pass the complete new notes; they replace the old ones.",
+                listOf("notes"),
+            ) {
+                put("notes", strProp("The complete new memory notes (max ~180 words)"))
+            }
+        )
+        put(
+            tool(
+                "remember",
                 "Save one durable fact to your long-term memory so you keep it across days. " +
                     "Use it whenever something worth carrying forward surfaces — a decision or " +
                     "change of direction, a project or goal detail, a milestone or progress " +
                     "update, a preference, a deadline, or a commitment — whether it comes from " +
                     "what they say, or from what you see in their tasks and calendar. Save " +
-                    "quietly; don't announce every save. Keep each fact to one concise sentence."
-            )
-            .inputSchema(
-                Tool.InputSchema.builder()
-                    .properties(
-                        Tool.InputSchema.Properties.builder()
-                            .putAdditionalProperty("fact", strProp("The single fact to remember, one concise sentence"))
-                            .build()
-                    )
-                    .required(listOf("fact"))
-                    .build()
-            )
-            .build(),
-    )
+                    "quietly; don't announce every save. Keep each fact to one concise sentence.",
+                listOf("fact"),
+            ) {
+                put("fact", strProp("The single fact to remember, one concise sentence"))
+            }
+        )
+    }
 
     /** Dispatch a tool call. Returns a short result string fed back to the model. */
     suspend fun execute(context: Context, name: String, input: Map<*, *>): String =
