@@ -25,7 +25,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The mentor chat engine: a Kimi K3-backed coach that sees everything Bibo logs.
+ * The mentor chat engine: a GLM-5.2-backed coach that sees everything Bibo logs.
  *
  * Context is managed in three layers so the conversation can run forever without
  * unbounded token growth:
@@ -40,15 +40,16 @@ import org.json.JSONObject
  */
 object Mentor {
     /**
-     * Kimi K3 (Moonshot AI) via OpenRouter — chosen as the Sonnet-tier equivalent: same
-     * $3/$15-per-MTok list pricing as Claude Sonnet 5, matching ~1M context, and the
-     * strongest of the current Chinese flagships specifically on tool-heavy agentic work
-     * (the thing this app lives on). OpenRouter speaks OpenAI's chat-completions wire
-     * format, not Anthropic's Messages API, so this file talks to it directly over
-     * OkHttp/org.json rather than through an SDK — there's no Kotlin/Android SDK for
-     * OpenRouter and no Anthropic-compatible endpoint to point the old client at.
+     * GLM-5.2 (Z.ai) via OpenRouter — swapped in for Kimi K3 on cost: $1.19/$3.74 per
+     * MTok vs Kimi's $3/$15 (roughly 2.5-4x cheaper), same ~1M context, tool calling
+     * verified reliable on the exact round-trip shape this app uses (multi-turn,
+     * multi-tool, subtask-breakdown quality held up). OpenRouter speaks OpenAI's
+     * chat-completions wire format, not Anthropic's Messages API, so this file talks to
+     * it directly over OkHttp/org.json rather than through an SDK — there's no
+     * Kotlin/Android SDK for OpenRouter and no Anthropic-compatible endpoint to point
+     * the old client at.
      */
-    private const val MODEL = "moonshotai/kimi-k3"
+    private const val MODEL = "z-ai/glm-5.2"
     private const val OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
     private const val PREFS = "mentor"
@@ -146,10 +147,11 @@ object Mentor {
      * One call to OpenRouter's OpenAI-compatible chat-completions endpoint. `messages` is
      * the full turn history as role-tagged JSON objects (system/user/assistant/tool);
      * `tools` is omitted entirely for the fast, no-action call sites. `reasoningEnabled`
-     * matters a lot here: Kimi K3 reasons by default, and a simple reply can burn 1000+
-     * reasoning tokens before it says anything — fine for the main chat loop, but the
-     * three fast paths (check-in, start-cheer, day-compaction) need it off both for cost
-     * and because check-in has to finish inside a ~25s broadcast-receiver window.
+     * matters here: GLM-5.2 reasons by default (lightly — tens of tokens, not thousands,
+     * but still real cost and latency for the fast paths). Reasoning stays on for the
+     * main chat loop, off for the three fast paths (check-in, start-cheer, day-
+     * compaction) both for cost and because check-in has to finish inside a ~25s
+     * broadcast-receiver window.
      */
     private fun openRouterChat(
         apiKey: String,

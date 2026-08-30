@@ -423,7 +423,7 @@ private fun KeySetupCard(onSave: (String) -> Unit, modifier: Modifier = Modifier
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Connect your mentor", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "The mentor runs on Kimi K3 via OpenRouter. Paste an OpenRouter API key " +
+                    "The mentor runs on GLM-5.2 via OpenRouter. Paste an OpenRouter API key " +
                         "(openrouter.ai/keys). It's stored only on this phone and used only " +
                         "for your mentor chats.",
                     style = MaterialTheme.typography.bodyMedium,
