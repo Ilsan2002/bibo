@@ -70,6 +70,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.bibo.data.AppScope
 import com.bibo.data.BiboDb
 import com.bibo.data.FoodEntry
 import com.bibo.data.HabitDay
@@ -132,7 +133,7 @@ fun HealthScreen() {
             Habit.WORKOUT -> habit.copy(workedOut = !habit.workedOut)
             Habit.PRAY -> habit.copy(prayed = !habit.prayed)
         }
-        scope.launch(Dispatchers.IO) { db.habits().upsert(next) }
+        AppScope.io.launch { db.habits().upsert(next) }
     }
 
     fun logText(text: String) {
@@ -143,7 +144,8 @@ fun HealthScreen() {
                 snackbar.showSnackbar("Didn't catch any food or habit")
                 return@launch
             }
-            withContext(Dispatchers.IO) {
+            // The writes must survive leaving this screen; the confirmation below is UI.
+            AppScope.io.launch {
                 val now = System.currentTimeMillis()
                 log.foods.forEach {
                     db.foods().insert(
@@ -295,7 +297,7 @@ fun HealthScreen() {
                     }
                 } else {
                     items(foods, key = { it.id }) { f ->
-                        FoodRow(f, onDelete = { scope.launch(Dispatchers.IO) { db.foods().delete(f) } })
+                        FoodRow(f, onDelete = { AppScope.io.launch { db.foods().delete(f) } })
                     }
                 }
             }

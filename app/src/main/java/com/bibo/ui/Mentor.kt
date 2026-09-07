@@ -58,6 +58,7 @@ object Mentor {
     private const val KEY_API = "api_key"
     private const val KEY_MEMORY = "memory"
     private const val KEY_PERSONA = "persona"
+    private const val KEY_MEMORY_PREV = "memory_prev"
 
     /**
      * The editable half of the system prompt — voice and personality only. The operating
@@ -82,7 +83,15 @@ object Mentor {
     private const val MAX_RAW_MESSAGES = 30
 
     /** Chat days older than this get a local digest instead of an LLM compaction. */
-    private const val MAX_COMPACT_AGE_DAYS = 14
+    private const val MAX_COMPACT_AGE_DAYS = 45
+
+    /**
+     * LLM compactions per call. Compaction runs lazily inside send()/checkIn(); after a
+     * long gap an unbounded backlog would run dozens of sequential model calls before
+     * the mentor could answer — and blow the check-in's ~25s window. Drain gradually,
+     * oldest first; the rest wait for the next call.
+     */
+    private const val MAX_COMPACTIONS_PER_CALL = 2
 
     /** Safety cap on the tool-call loop so a misbehaving turn can't spin forever. */
     private const val MAX_TOOL_ITERATIONS = 10
@@ -114,8 +123,18 @@ object Mentor {
         prefs(context).getString(KEY_MEMORY, null).orEmpty()
 
     private fun setMemory(context: Context, value: String) {
-        prefs(context).edit().putString(KEY_MEMORY, value.trim()).apply()
+        // Keep the outgoing version. The notes are the single most valuable mutable
+        // state in the app and get wholesale-rewritten by the model twice a day, so one
+        // bad rewrite must be recoverable rather than silently final.
+        prefs(context).edit()
+            .putString(KEY_MEMORY_PREV, memory(context))
+            .putString(KEY_MEMORY, value.trim())
+            .apply()
     }
+
+    /** The notes as they were before the most recent rewrite, for recovery. */
+    fun previousMemory(context: Context): String =
+        prefs(context).getString(KEY_MEMORY_PREV, null).orEmpty()
 
     /** User-facing edit of the memory notes (from the Mentor tab's Memory view). */
     fun saveMemory(context: Context, value: String) = setMemory(context, value)
@@ -487,7 +506,10 @@ object Mentor {
                 messageContent(
                     openRouterChat(key, messages, tools = null, maxTokens = 300, reasoningEnabled = false)
                 ).ifBlank { null }
-            } catch (_: Throwable) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w("Mentor", "start-cheer failed: ${e.javaClass.simpleName}: ${e.message}")
                 null
             }
         }
@@ -502,9 +524,10 @@ object Mentor {
     private suspend fun compactPendingDays(context: Context, apiKey: String, today: Long) {
         val db = BiboDb.get(context)
 
+        var llmBudget = MAX_COMPACTIONS_PER_CALL
         db.chat().undigestedDays(today).forEach { day ->
             if (day >= today - MAX_COMPACT_AGE_DAYS) {
-                llmCompactDay(context, apiKey, day)
+                if (llmBudget-- > 0) llmCompactDay(context, apiKey, day)
             } else {
                 db.chatDays().upsert(ChatDay(day, localDigest(context, day)))
             }
@@ -562,7 +585,16 @@ object Mentor {
         val newMemory = out.substringAfter("MEMORY:", "").trim()
 
         db.chatDays().upsert(ChatDay(day, digest))
-        if (newMemory.isNotBlank()) setMemory(context, newMemory)
+        if (newMemory.isNotBlank()) {
+            // Sanity guard: a rewrite that throws away most of the notes is far more
+            // likely a bad generation than a real cleanup. Keep what we had and log it.
+            val old = memory(context)
+            if (old.length > 300 && newMemory.length < old.length * 0.4) {
+                Log.w("Mentor", "compaction shrank memory ${old.length}->${newMemory.length} chars; keeping previous notes")
+            } else {
+                setMemory(context, newMemory)
+            }
+        }
     }
 
     private suspend fun localDigest(context: Context, day: Long): String {

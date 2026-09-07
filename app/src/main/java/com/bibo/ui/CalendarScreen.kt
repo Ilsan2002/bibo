@@ -57,6 +57,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import com.bibo.data.AppScope
+import kotlinx.coroutines.async
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -308,7 +310,8 @@ fun CalendarScreen() {
             onDismiss = { editor = null },
             onSave = { date, st, et, title ->
                 editor = null
-                scope.launch {
+                // Durable write on a scope that outlives this screen (see AppScope).
+                AppScope.io.launch {
                     val startMillis = date.atTime(st).atZone(zone).toInstant().toEpochMilli()
                     val endDateTime =
                         if (et.isAfter(st)) date.atTime(et) else date.plusDays(1).atTime(et)
@@ -368,15 +371,17 @@ fun CalendarScreen() {
                 if (req != null) editor = req
             },
             onDelete = {
-                scope.launch {
-                    withContext(Dispatchers.IO) {
-                        when (item) {
-                            is CalendarItem.Block -> db.activityBlocks().delete(item.block)
-                            is CalendarItem.Device -> calRepo.deleteEvent(item.event.id)
-                            is CalendarItem.Usage -> Unit
-                        }
+                // The delete outlives this screen; only the re-read is tied to it.
+                val job = AppScope.io.async {
+                    when (item) {
+                        is CalendarItem.Block -> db.activityBlocks().delete(item.block)
+                        is CalendarItem.Device -> calRepo.deleteEvent(item.event.id)
+                        is CalendarItem.Usage -> Unit
                     }
-                    detail = null
+                }
+                detail = null
+                scope.launch {
+                    job.join()
                     refresh++
                 }
             },

@@ -35,7 +35,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.bibo.data.AppScope
 import com.bibo.data.BiboDb
 import com.bibo.data.Goal
 import com.bibo.data.TodoTask
@@ -60,7 +60,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val db = remember { BiboDb.get(context) }
     val accent = Color(goal.color)
     val snackbarHostState = remember { SnackbarHostState() }
@@ -75,7 +74,8 @@ fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit) {
     val nextTask = parents.filter { it.completedAt == null }.minByOrNull { it.sortOrder }
 
     fun toggle(task: TodoTask) {
-        scope.launch(Dispatchers.IO) {
+        // Durable write on a scope that outlives this screen (see AppScope).
+        AppScope.io.launch {
             val complete = task.completedAt == null
             val now = System.currentTimeMillis()
             db.todos().update(task.copy(completedAt = if (complete) now else null, startedAt = null))

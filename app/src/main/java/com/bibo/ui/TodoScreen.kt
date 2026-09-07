@@ -177,15 +177,19 @@ fun TodoScreen() {
         }
     }
 
+    // Every durable write below runs on AppScope, not the composition scope: a tap
+    // followed by a tab switch would otherwise cancel the write mid-flight (that was
+    // the deleted-tasks-came-back bug). UI state stays on `scope`, where cancellation
+    // on leaving the screen is the correct behavior.
     fun persistOrder() {
         val snapshot = ordered.toList()
-        scope.launch(Dispatchers.IO) {
+        AppScope.io.launch {
             db.todos().updateAll(snapshot.mapIndexed { i, t -> t.copy(sortOrder = i.toLong()) })
         }
     }
 
     fun setCompleted(task: TodoTask, complete: Boolean) {
-        scope.launch {
+        AppScope.io.launch {
             withContext(Dispatchers.IO) {
                 if (complete) {
                     val end = System.currentTimeMillis()
@@ -487,7 +491,7 @@ fun TodoScreen() {
                 if (parentId == null && filterGoalId != null && filterGoalId != resolvedGoal) {
                     filterGoalId = null
                 }
-                scope.launch(Dispatchers.IO) {
+                AppScope.io.launch {
                     val now2 = System.currentTimeMillis()
                     db.todos().insert(
                         TodoTask(
@@ -531,7 +535,7 @@ fun TodoScreen() {
                 showGoalEditor = false
                 haptics.confirm()
                 val existing = editGoal
-                scope.launch(Dispatchers.IO) {
+                AppScope.io.launch {
                     if (existing == null) {
                         db.goals().insert(
                             Goal(
@@ -548,7 +552,7 @@ fun TodoScreen() {
                 {
                     showGoalEditor = false
                     if (filterGoalId == g.id) filterGoalId = null
-                    scope.launch(Dispatchers.IO) {
+                    AppScope.io.launch {
                         db.todos().clearGoal(g.id)
                         db.goals().delete(g)
                     }
@@ -575,7 +579,7 @@ fun TodoScreen() {
                     onClick = {
                         val t = newTitle.trim()
                         editTask = null
-                        scope.launch(Dispatchers.IO) { db.todos().update(task.copy(title = t)) }
+                        AppScope.io.launch { db.todos().update(task.copy(title = t)) }
                     },
                 ) { Text("Save") }
             },

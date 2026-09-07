@@ -653,8 +653,12 @@ object MentorTools {
         val db = BiboDb.get(context)
         val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
-        val msgs = db.chat().search(q, 10)
-        val days = db.chatDays().search(q, 6)
+        // Matched in Kotlin, not SQL: SQLite's LIKE is case-insensitive for ASCII only, so
+        // a search for "Хотелки" would miss "хотелки" — and this user writes in both
+        // languages. Kotlin's contains(ignoreCase) is Unicode-correct, and the whole
+        // history is small enough to scan.
+        val msgs = db.chat().since(0).filter { it.content.contains(q, true) }.takeLast(10).asReversed()
+        val days = db.chatDays().since(0).filter { it.digest.contains(q, true) }.takeLast(6).asReversed()
         val memLines = Mentor.memory(context).lines().filter { it.contains(q, true) }
 
         if (msgs.isEmpty() && days.isEmpty() && memLines.isEmpty()) {

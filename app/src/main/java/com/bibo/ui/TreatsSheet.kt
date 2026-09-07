@@ -45,6 +45,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.bibo.data.AppScope
 import com.bibo.data.BiboDb
 import com.bibo.data.Rewards
 import com.bibo.data.WishlistItem
@@ -157,12 +158,14 @@ fun TreatsSheet(onDismiss: () -> Unit) {
                 WishlistRow(
                     item = item,
                     canAfford = item.redeemedAt == null && available >= item.priceCents,
+                    // Writes run on AppScope: this sheet has its own composition scope,
+                    // and swiping it away right after a tap would cancel the write.
                     onRedeem = {
-                        scope.launch {
+                        AppScope.io.launch {
                             if (Rewards.redeem(context, item)) refresh++
                         }
                     },
-                    onDelete = { scope.launch { withContext(Dispatchers.IO) { db.wishlist().delete(item) } } },
+                    onDelete = { AppScope.io.launch { db.wishlist().delete(item) } },
                 )
             }
 
@@ -188,14 +191,14 @@ fun TreatsSheet(onDismiss: () -> Unit) {
                 onClick = {
                     val cents = ((newPrice.toDoubleOrNull() ?: 0.0) * 100).toInt()
                     if (newName.isNotBlank() && cents > 0) {
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                db.wishlist().insert(
-                                    WishlistItem(name = newName.trim(), priceCents = cents, createdAt = System.currentTimeMillis())
-                                )
-                            }
-                            newName = ""; newPrice = ""
+                        // Capture before clearing: the write runs later on another thread.
+                        val name = newName.trim()
+                        AppScope.io.launch {
+                            db.wishlist().insert(
+                                WishlistItem(name = name, priceCents = cents, createdAt = System.currentTimeMillis())
+                            )
                         }
+                        newName = ""; newPrice = ""
                     }
                 },
                 enabled = newName.isNotBlank() && (newPrice.toDoubleOrNull() ?: 0.0) > 0,
