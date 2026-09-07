@@ -220,36 +220,7 @@ fun TodoScreen() {
         }
     }
 
-    fun requestDelete(task: TodoTask) {
-        // Commit the delete NOW, then offer Undo as a restore. The old version only
-        // hid the row and waited for the Undo snackbar to time out before touching the
-        // database — on a scope tied to this screen. Switching tabs (e.g. to go text the
-        // mentor) cancelled that scope, so the delete never ran and every "deleted" task
-        // came back on return. Deleting first makes leaving the screen mean what it looks
-        // like it means.
-        AppScope.io.launch {
-            val children = db.todos().allOnce().filter { it.parentId == task.id }
-            db.todos().deleteChildren(task.id)
-            db.todos().delete(task)
-
-            // Bounded: with no SnackbarHost composed (screen already left) showSnackbar
-            // would suspend forever and leak this coroutine.
-            val restored = withTimeoutOrNull(8_000) {
-                withContext(Dispatchers.Main) {
-                    snackbarHostState.showSnackbar(
-                        message = "Deleted \"${task.title}\"",
-                        actionLabel = "Undo",
-                    ) == SnackbarResult.ActionPerformed
-                }
-            } ?: false
-            if (restored) {
-                // Re-insert with the original ids so subtasks re-attach to their parent
-                // (Room only auto-generates an id when it is 0).
-                db.todos().insert(task)
-                children.forEach { db.todos().insert(it) }
-            }
-        }
-    }
+    fun requestDelete(task: TodoTask) = deleteTaskWithUndo(db, task, snackbarHostState)
 
     fun toggleTimer(task: TodoTask) {
         // Route through the shared TimerController so a task's timer is the same session the
@@ -616,7 +587,7 @@ fun TodoScreen() {
 }
 
 @Composable
-private fun SwipeableTaskRow(
+internal fun SwipeableTaskRow(
     task: TodoTask,
     onComplete: (() -> Unit)?,
     onDelete: () -> Unit,

@@ -27,6 +27,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,6 +63,8 @@ fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit) {
     val scope = rememberCoroutineScope()
     val db = remember { BiboDb.get(context) }
     val accent = Color(goal.color)
+    val snackbarHostState = remember { SnackbarHostState() }
+    val haptics = rememberHaptics()
 
     val tasks by db.todos().forGoal(goal.id).collectAsStateWithLifecycle(emptyList())
     val parents = tasks.filter { it.parentId == null }
@@ -81,9 +86,14 @@ fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit) {
         }
     }
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize(),
+            Modifier
+                .fillMaxSize()
+                .padding(padding),
             contentPadding = PaddingValues(bottom = 32.dp),
         ) {
             item {
@@ -207,10 +217,24 @@ fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit) {
                 }
             }
 
+            // Swipe left to delete, same gesture as the Tasks tab. Tapping a row already
+            // toggles completion, so swipe-to-complete is left off here.
             items(parents, key = { it.id }) { parent ->
-                GoalTaskRow(parent, isChild = false, onToggle = { toggle(parent) })
+                SwipeableTaskRow(
+                    task = parent,
+                    onComplete = null,
+                    onDelete = { haptics.reject(); deleteTaskWithUndo(db, parent, snackbarHostState) },
+                ) {
+                    GoalTaskRow(parent, isChild = false, onToggle = { toggle(parent) })
+                }
                 childrenOf[parent.id].orEmpty().forEach { sub ->
-                    GoalTaskRow(sub, isChild = true, onToggle = { toggle(sub) })
+                    SwipeableTaskRow(
+                        task = sub,
+                        onComplete = null,
+                        onDelete = { haptics.reject(); deleteTaskWithUndo(db, sub, snackbarHostState) },
+                    ) {
+                        GoalTaskRow(sub, isChild = true, onToggle = { toggle(sub) })
+                    }
                 }
             }
         }
