@@ -235,6 +235,10 @@ object Mentor {
             // left no record in chat history — so on the next turn the model, seeing no
             // evidence, would re-create the same tasks. That was the duplicate-task bug.
             val actionLog = mutableListOf<String>()
+            // Same tool + same arguments must not run twice in one turn. A model that
+            // retries an identical call (or loops) would otherwise double-insert — this
+            // replays the first result instead of re-executing.
+            val executedThisTurn = mutableMapOf<String, String>()
             try {
                 val system = buildSystemPrompt(context, today)
                 val history = db.chat().since(today - 1).takeLast(MAX_RAW_MESSAGES)
@@ -271,15 +275,24 @@ object Mentor {
                         val tc = toolCalls.getJSONObject(i)
                         val fn = tc.getJSONObject("function")
                         val name = fn.getString("name")
-                        val inputMap = runCatching { JSONObject(fn.optString("arguments", "{}")).toMap() }
+                        val rawArgs = fn.optString("arguments", "{}")
+                        val inputMap = runCatching { JSONObject(rawArgs).toMap() }
                             .getOrDefault(emptyMap())
-                        val result = MentorTools.execute(context, name, inputMap)
-                        // Receipts are for state-changing actions only — reads and quiet
-                        // memory work would just be noise.
-                        if (name !in setOf("remember", "edit_memory", "search_history", "recall_day") &&
-                            result.isNotBlank()
-                        ) {
-                            actionLog += result
+                        val callKey = "$name|$rawArgs"
+                        val alreadyRan = executedThisTurn[callKey]
+                        val result: String
+                        if (alreadyRan != null) {
+                            result = "Already did that in this turn — $alreadyRan"
+                        } else {
+                            result = MentorTools.execute(context, name, inputMap)
+                            executedThisTurn[callKey] = result
+                            // Receipts are for state-changing actions only — reads and quiet
+                            // memory work would just be noise.
+                            if (name !in setOf("remember", "edit_memory", "search_history", "recall_day") &&
+                                result.isNotBlank()
+                            ) {
+                                actionLog += result
+                            }
                         }
                         messages.put(
                             JSONObject()
@@ -586,6 +599,14 @@ object Mentor {
                         else "due ${LocalDate.ofEpochDay(it)}"
                     }
                     if (bits.isNotEmpty()) append(" (${bits.joinToString(", ")})")
+                    // List the actual open step titles, not just a count — otherwise the
+                    // model can't tell which steps already exist and re-adds them.
+                    val openSteps = subs.filter { it.completedAt == null }
+                    if (openSteps.isNotEmpty()) {
+                        append("\n    existing steps: ")
+                        append(openSteps.take(8).joinToString("; ") { it.title })
+                        if (openSteps.size > 8) append("; …")
+                    }
                 }
             }
 

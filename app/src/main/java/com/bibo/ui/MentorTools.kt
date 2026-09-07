@@ -563,14 +563,26 @@ object MentorTools {
         val parent = parents.firstOrNull { it.title.equals(q, true) }
             ?: parents.firstOrNull { it.title.contains(q, true) || q.contains(it.title, true) }
             ?: return "No open task matching \"$q\"."
+        // Dedup against the steps this task already has. Without this the model — which
+        // only ever saw a "2/5 steps done" COUNT, never the step titles — would re-add
+        // the same steps every time it touched the task, and they'd pile up invisibly
+        // because subtasks render collapsed by default.
+        val existing = all.filter { it.parentId == parent.id }.map { normalizeTitle(it.title) }.toSet()
+        val fresh = steps.filter { normalizeTitle(it) !in existing }.distinctBy { normalizeTitle(it) }
+        val skipped = steps.size - fresh.size
+        if (fresh.isEmpty()) {
+            return "\"${parent.title}\" already has ${if (steps.size == 1) "that step" else "all of those steps"} — nothing added."
+        }
+
         val baseOrder = (all.filter { it.parentId == parent.id }.maxOfOrNull { it.sortOrder } ?: 0L) + 1
         val now = System.currentTimeMillis()
-        steps.forEachIndexed { i, s ->
+        fresh.forEachIndexed { i, s ->
             db.todos().insert(
                 TodoTask(title = s, parentId = parent.id, createdAt = now + i, sortOrder = baseOrder + i, goalId = parent.goalId)
             )
         }
-        return "Added ${steps.size} step${if (steps.size > 1) "s" else ""} to \"${parent.title}\"."
+        return "Added ${fresh.size} step${if (fresh.size > 1) "s" else ""} to \"${parent.title}\"" +
+            (if (skipped > 0) " ($skipped already there, skipped)." else ".")
     }
 
     private suspend fun logFood(context: Context, input: Map<*, *>): String {
