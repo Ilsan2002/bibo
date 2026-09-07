@@ -74,6 +74,12 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Surface
+import androidx.compose.ui.text.style.TextOverflow
+import com.bibo.data.TodoTask
+import java.time.DayOfWeek
 
 private val sessionTimeFmt = DateTimeFormatter.ofPattern("H:mm")
 
@@ -107,18 +113,44 @@ fun TimerScreen() {
 
     var showReflection by remember { mutableStateOf(false) }
 
+    // The screen should propose, not just ask: next open top-level tasks become one-tap intentions.
+    val allTasks by db.todos().all().collectAsState(initial = emptyList())
+    val suggestions = remember(allTasks) {
+        allTasks.filter { it.completedAt == null && it.parentId == null }.take(4)
+    }
+    // Focused time today / this week (Mon-based) as the screen's feedback loop.
+    val weekStart = remember(dayStart) {
+        LocalDate.now().with(DayOfWeek.MONDAY).atStartOfDay(zone).toInstant().toEpochMilli()
+    }
+    val weekBlocksFlow = remember(weekStart) { db.activityBlocks().blocksIn(weekStart, dayEnd) }
+    val weekBlocks by weekBlocksFlow.collectAsState(initial = emptyList())
+    val todayFocusMs = sessions.sumOf { it.endMillis - it.startMillis }
+    val weekFocusMs = weekBlocks
+        .filter { it.source == "TIMER" || it.source == "FOCUS" }
+        .sumOf { it.endMillis - it.startMillis }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
             item(key = "title") {
-                Text(
-                    "Focus",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
-                )
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)) {
+                    Text("Focus", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    if (!running) {
+                        Text(
+                            "One thing. Phone down.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(18.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                            FocusStat(focusLabel(todayFocusMs), "focused today")
+                            FocusStat(focusLabel(weekFocusMs), "this week")
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
+                }
             }
 
             item(key = "main") {
@@ -130,6 +162,7 @@ fun TimerScreen() {
                 } else {
                     SetupPanel(
                         goals = goals,
+                        suggestions = suggestions,
                         onStart = { config ->
                             haptics.toggleOn()
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -281,7 +314,7 @@ private fun RunningPanel(now: Long, onStop: () -> Unit) {
 }
 
 @Composable
-private fun SetupPanel(goals: List<Goal>, onStart: (FocusConfig) -> Unit) {
+private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: (FocusConfig) -> Unit) {
     val context = LocalContext.current
     var intention by remember { mutableStateOf("") }
     var goalId by remember { mutableStateOf<Long?>(null) }
@@ -301,62 +334,119 @@ private fun SetupPanel(goals: List<Goal>, onStart: (FocusConfig) -> Unit) {
         OutlinedTextField(
             value = intention,
             onValueChange = { intention = it },
-            label = { Text("What are you focusing on?") },
+            placeholder = {
+                Text("What are you focusing on?", style = MaterialTheme.typography.titleMedium)
+            },
+            textStyle = MaterialTheme.typography.titleMedium,
             singleLine = true,
+            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth(),
         )
 
+        if (suggestions.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "Next up",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    suggestions.forEach { t ->
+                        FilterChip(
+                            selected = intention == t.title,
+                            onClick = {
+                                intention = t.title
+                                if (t.goalId != null) goalId = t.goalId
+                            },
+                            leadingIcon = { Icon(Icons.Filled.PlayArrow, null, Modifier.size(16.dp)) },
+                            label = { Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        )
+                    }
+                }
+            }
+        }
+
         if (goals.isNotEmpty()) {
-            Text("Goal", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = goalId == null, onClick = { goalId = null }, label = { Text("None") })
-                goals.forEach { g ->
-                    FilterChip(
-                        selected = goalId == g.id,
-                        onClick = { goalId = g.id },
-                        leadingIcon = { Box(Modifier.size(10.dp).background(Color(g.color), CircleShape)) },
-                        label = { Text(g.name) },
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Goal", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = goalId == null, onClick = { goalId = null }, label = { Text("None") })
+                    goals.forEach { g ->
+                        FilterChip(
+                            selected = goalId == g.id,
+                            onClick = { goalId = g.id },
+                            leadingIcon = { Box(Modifier.size(10.dp).background(Color(g.color), CircleShape)) },
+                            label = { Text(g.name) },
+                        )
+                    }
+                }
+            }
+        }
+
+        // The three session options live in one card so the form has structure, not floating rows.
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { showAppPicker = true }
+                        .padding(vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.Block, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(14.dp))
+                    Text(
+                        if (blocked.isEmpty()) "Block distracting apps"
+                        else "${blocked.size} app${if (blocked.size > 1) "s" else ""} blocked",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        if (blocked.isEmpty()) "Choose" else "Edit",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.width(38.dp))
+                    Text("Pomodoro (${workMin}m / ${breakMin}m)", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    Switch(checked = pomodoro, onCheckedChange = { pomodoro = it })
+                }
+                if (pomodoro) {
+                    Column(Modifier.padding(start = 38.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(15, 25, 50).forEach { m ->
+                                FilterChip(selected = workMin == m, onClick = { workMin = m }, label = { Text("${m}m work") })
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(5, 10, 15).forEach { m ->
+                                FilterChip(selected = breakMin == m, onClick = { breakMin = m }, label = { Text("${m}m break") })
+                            }
+                        }
+                    }
+                }
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.NotificationsOff, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(14.dp))
+                    Text("Silence phone (DND)", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = dnd,
+                        onCheckedChange = {
+                            if (it && !FocusDnd.hasAccess(context)) FocusDnd.openSettings(context) else dnd = it
+                        },
                     )
                 }
             }
-        }
-
-        // Block apps
-        OutlinedButton(onClick = { showAppPicker = true }, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.Block, null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (blocked.isEmpty()) "Block distracting apps" else "${blocked.size} app${if (blocked.size > 1) "s" else ""} blocked")
-        }
-
-        // Pomodoro
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Pomodoro (${workMin}m / ${breakMin}m)", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-            Switch(checked = pomodoro, onCheckedChange = { pomodoro = it })
-        }
-        if (pomodoro) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(15, 25, 50).forEach { m ->
-                    FilterChip(selected = workMin == m, onClick = { workMin = m }, label = { Text("${m}m work") })
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(5, 10, 15).forEach { m ->
-                    FilterChip(selected = breakMin == m, onClick = { breakMin = m }, label = { Text("${m}m break") })
-                }
-            }
-        }
-
-        // DND
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.NotificationsOff, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(8.dp))
-            Text("Silence phone (DND)", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-            Switch(
-                checked = dnd,
-                onCheckedChange = {
-                    if (it && !FocusDnd.hasAccess(context)) FocusDnd.openSettings(context) else dnd = it
-                },
-            )
         }
 
         Button(
@@ -374,8 +464,18 @@ private fun SetupPanel(goals: List<Goal>, onStart: (FocusConfig) -> Unit) {
                 )
             },
             enabled = intention.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Start focus") }
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+        ) {
+            Icon(Icons.Filled.PlayArrow, null)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (intention.isBlank()) "Type or pick what to focus on" else "Start focus",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
     }
 
     if (showAppPicker) {
@@ -478,5 +578,15 @@ private fun ReflectionSheet(onDismiss: () -> Unit, onSave: (String) -> Unit) {
                 Button(onClick = { onSave(note.trim()) }, modifier = Modifier.weight(1f)) { Text("Save") }
             }
         }
+    }
+}
+
+private fun focusLabel(ms: Long): String = if (ms < 60_000L) "0m" else formatDuration(ms)
+
+@Composable
+private fun FocusStat(value: String, label: String) {
+    Column {
+        Text(value, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

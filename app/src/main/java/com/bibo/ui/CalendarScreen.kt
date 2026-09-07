@@ -96,7 +96,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val PAGER_CENTER = 5000
-private val monthFmt = DateTimeFormatter.ofPattern("MMMM yyyy")
+private val monthFmt = DateTimeFormatter.ofPattern("MMM yyyy")
 private val detailDateFmt = DateTimeFormatter.ofPattern("EEE, MMM d")
 private val detailTimeFmt = DateTimeFormatter.ofPattern("H:mm")
 

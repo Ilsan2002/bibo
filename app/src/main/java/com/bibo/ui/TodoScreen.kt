@@ -922,12 +922,16 @@ private fun GoalSummaryRow(
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "$done / ${goalTasks.size} done",
+                    if (goalTasks.isEmpty()) "No tasks yet" else "$done / ${goalTasks.size} done",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    next?.let { "Next: ${it.title}" } ?: "All done 🎉",
+                    when {
+                        goalTasks.isEmpty() -> "Add one or ask mentor"
+                        next != null -> "Next: ${next.title}"
+                        else -> "All done 🎉"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     color = MaterialTheme.colorScheme.onSurface,
