@@ -14,6 +14,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -315,6 +316,10 @@ object Mentor {
                     )
                 )
                 Result.success(reply)
+            } catch (e: CancellationException) {
+                // Not a failure — the caller went away. Never persist this as an ERROR
+                // row the user sees ("rememberCoroutineScope left the composition").
+                throw e
             } catch (e: Throwable) {
                 // If tools already ran before the failure, persist that record FIRST —
                 // otherwise the next turn has no idea those actions happened.

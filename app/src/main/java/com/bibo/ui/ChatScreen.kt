@@ -53,7 +53,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.bibo.data.AppScope
 import com.bibo.data.BiboDb
+import kotlinx.coroutines.async
 import com.bibo.data.ChatMessage
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -82,8 +84,13 @@ fun ChatScreen() {
         if (text.isBlank() || sending || !hasKey) return
         input = ""
         sending = true
+        // The request itself runs on a scope that outlives this screen — leaving the tab
+        // mid-send used to cancel it, which surfaced as a bogus "rememberCoroutineScope
+        // left the composition" error row and could drop a reply whose tool calls had
+        // already run. Only the UI flag is tied to the composition.
+        val job = AppScope.io.async { Mentor.send(context, text) }
         scope.launch {
-            Mentor.send(context, text)
+            job.join()
             sending = false
         }
     }

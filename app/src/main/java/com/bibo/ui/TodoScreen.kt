@@ -94,6 +94,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.bibo.data.ActivityBlock
+import com.bibo.data.AppScope
 import com.bibo.data.BiboDb
 import com.bibo.data.Goal
 import com.bibo.data.Rewards
@@ -105,6 +106,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
@@ -135,8 +137,6 @@ fun TodoScreen() {
     LaunchedEffect(tasks) {
         earnedThisWeek = withContext(Dispatchers.IO) { Rewards.earnedCents(context) }
     }
-    // ids whose delete is pending an undo window — filtered out of the UI meanwhile
-    val pendingDelete = remember { mutableStateOf(setOf<Long>()) }
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val anyRunning = tasks.any { it.startedAt != null }
@@ -152,9 +152,8 @@ fun TodoScreen() {
     // Parents whose subtasks are expanded (collapsed by default so big tasks stay tidy).
     val expandedParents = remember { mutableStateSetOf<Long>() }
 
-    val visible = tasks.filter { it.id !in pendingDelete.value }
-    val children = visible.filter { it.parentId != null }.groupBy { it.parentId }
-    val allParents = visible.filter { it.parentId == null }
+    val children = tasks.filter { it.parentId != null }.groupBy { it.parentId }
+    val allParents = tasks.filter { it.parentId == null }
     // When a goal folder is open, show only that goal's tasks.
     val parents = if (filterGoalId == null) allParents else allParents.filter { it.goalId == filterGoalId }
     val archivedDone = parents.filter { it.completedAt != null && it.completedAt < startOfToday }
@@ -222,20 +221,32 @@ fun TodoScreen() {
     }
 
     fun requestDelete(task: TodoTask) {
-        pendingDelete.value = pendingDelete.value + task.id
-        scope.launch {
-            val result = snackbarHostState.showSnackbar(
-                message = "Deleted \"${task.title}\"",
-                actionLabel = "Undo",
-            )
-            if (result == SnackbarResult.ActionPerformed) {
-                pendingDelete.value = pendingDelete.value - task.id
-            } else {
-                withContext(Dispatchers.IO) {
-                    db.todos().deleteChildren(task.id)
-                    db.todos().delete(task)
+        // Commit the delete NOW, then offer Undo as a restore. The old version only
+        // hid the row and waited for the Undo snackbar to time out before touching the
+        // database — on a scope tied to this screen. Switching tabs (e.g. to go text the
+        // mentor) cancelled that scope, so the delete never ran and every "deleted" task
+        // came back on return. Deleting first makes leaving the screen mean what it looks
+        // like it means.
+        AppScope.io.launch {
+            val children = db.todos().allOnce().filter { it.parentId == task.id }
+            db.todos().deleteChildren(task.id)
+            db.todos().delete(task)
+
+            // Bounded: with no SnackbarHost composed (screen already left) showSnackbar
+            // would suspend forever and leak this coroutine.
+            val restored = withTimeoutOrNull(8_000) {
+                withContext(Dispatchers.Main) {
+                    snackbarHostState.showSnackbar(
+                        message = "Deleted \"${task.title}\"",
+                        actionLabel = "Undo",
+                    ) == SnackbarResult.ActionPerformed
                 }
-                pendingDelete.value = pendingDelete.value - task.id
+            } ?: false
+            if (restored) {
+                // Re-insert with the original ids so subtasks re-attach to their parent
+                // (Room only auto-generates an id when it is 0).
+                db.todos().insert(task)
+                children.forEach { db.todos().insert(it) }
             }
         }
     }
