@@ -1,6 +1,7 @@
 package com.bibo.ui
 
 import android.content.Context
+import android.util.Log
 import com.bibo.data.BiboDb
 import com.bibo.data.ChatDay
 import com.bibo.data.ChatMessage
@@ -355,10 +356,22 @@ object Mentor {
             val db = BiboDb.get(context)
             val today = LocalDate.now().toEpochDay()
 
-            // Don't ping right after a live exchange; ~45 min lets the hourly cadence
-            // resume soon without talking over an active back-and-forth.
-            val cutoff = System.currentTimeMillis() - 45 * 60 * 1000
-            if (db.chat().since(today).any { it.createdAt >= cutoff }) return@withLock null
+            // Don't talk over a live exchange, and back off hard when they aren't
+            // engaging at all. Firing every hour into silence turns the coach into spam
+            // (this ran 15x/day for 11 straight days unanswered), and it also floods the
+            // 30-message working-memory window with nothing but the mentor's own voice,
+            // so it ends up talking only to itself. Any reply resets the cadence.
+            val recent = db.chat().since(today - 14)
+            val now = System.currentTimeMillis()
+            val lastAnyAt = recent.maxOfOrNull { it.createdAt } ?: 0L
+            val lastUserAt = recent.filter { it.role == "USER" }.maxOfOrNull { it.createdAt } ?: 0L
+            val unanswered = recent.count { it.role == "ASSISTANT" && it.createdAt > lastUserAt }
+            val requiredGap = when {
+                unanswered >= 8 -> 24 * 60 * 60 * 1000L // long ignored: once a day
+                unanswered >= 3 -> 4 * 60 * 60 * 1000L  // a few unanswered: every ~4h
+                else -> 45 * 60 * 1000L                 // normal hourly cadence
+            }
+            if (now - lastAnyAt < requiredGap) return@withLock null
 
             runCatching { compactPendingDays(context, key, today) }
 
@@ -397,7 +410,11 @@ object Mentor {
                     )
                 )
                 reply
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
+                // Never swallow this silently: a check-in that fails leaves no trace at
+                // all (no chat row, no notification), so the app can be dead for weeks
+                // and look merely quiet. At minimum it must be greppable in logcat.
+                Log.w("Mentor", "check-in failed: ${e.javaClass.simpleName}: ${e.message}", e)
                 null
             }
         }
