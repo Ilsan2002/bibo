@@ -48,7 +48,15 @@ private data class WidgetData(
     val earnedCents: Int,
     val budgetCents: Int,
     val quote: String,
+    val sessionId: String?,
+    val suggestedTaskId: Long?,
+    val startedAt: Long,
 )
+
+private object WidgetParameters {
+    val sessionId = ActionParameters.Key<String>("session_id")
+    val taskId = ActionParameters.Key<Long>("task_id")
+}
 
 class BiboWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
@@ -61,9 +69,11 @@ class BiboWidget : GlanceAppWidget() {
     }
 
     private suspend fun load(context: Context): WidgetData = withContext(Dispatchers.IO) {
-        val running = TimerController.isRunning(context)
-        val start = TimerController.runningStart(context)
-        val elapsed = if (running && start > 0) (System.currentTimeMillis() - start) / 60_000 else 0
+        TimerController.initialize(context)
+        val session = BiboDb.get(context).workSessions().active()
+        val running = session != null
+        val start = session?.startMillis ?: 0
+        val elapsed = session?.let(TimerController::elapsedMillis)?.div(60_000) ?: 0
         val top = runCatching {
             BiboDb.get(context).todos().incompleteOnce()
                 .filter { it.parentId == null }.minByOrNull { it.sortOrder }
@@ -73,13 +83,16 @@ class BiboWidget : GlanceAppWidget() {
         val quote = Rewards.QUOTES[(LocalDate.now().toEpochDay() % Rewards.QUOTES.size).toInt()]
         WidgetData(
             running = running,
-            runningTitle = TimerController.runningTitle(context),
+            runningTitle = session?.title.orEmpty(),
             elapsedMin = elapsed,
             suggestedTitle = top?.title,
             suggestedReward = top?.rewardCents ?: 0,
             earnedCents = earned,
             budgetCents = budget,
             quote = quote,
+            sessionId = session?.id,
+            suggestedTaskId = top?.id,
+            startedAt = start,
         )
     }
 }
@@ -91,8 +104,7 @@ class BiboWidgetReceiver : GlanceAppWidgetReceiver() {
 /** Stop the running timer (widget "Stop" tap). */
 class ToggleTimerAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        if (TimerController.isRunning(context)) TimerController.stopTimer(context)
-        else TimerController.startTimer(context, "Quick timer")
+        parameters[WidgetParameters.sessionId]?.let { TimerController.stopSession(context, it) }
         BiboWidget().updateAll(context)
     }
 }
@@ -100,13 +112,8 @@ class ToggleTimerAction : ActionCallback {
 /** Start the top open task's timer straight from the widget ("Start" tap). */
 class StartTopTaskAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        val top = withContext(Dispatchers.IO) {
-            runCatching {
-                BiboDb.get(context).todos().incompleteOnce()
-                    .filter { it.parentId == null }.minByOrNull { it.sortOrder }
-            }.getOrNull()
-        }
-        if (top != null) TimerController.startTask(context, top.id, top.title, top.goalId)
+        val taskId = parameters[WidgetParameters.taskId]
+        if (taskId != null) TimerController.startTaskAwait(context, taskId, "Task", null, requireIdle = true)
         BiboWidget().updateAll(context)
     }
 }
@@ -160,7 +167,7 @@ private fun WidgetBody(data: WidgetData) {
             Spacer(GlanceModifier.height(2.dp))
             Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "${data.elapsedMin} min in",
+                    "Started ${java.time.Instant.ofEpochMilli(data.startedAt).atZone(java.time.ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("H:mm"))}",
                     style = TextStyle(fontSize = 13.sp, color = GlanceTheme.colors.onSurfaceVariant),
                     modifier = GlanceModifier.defaultWeight(),
                 )
@@ -168,7 +175,7 @@ private fun WidgetBody(data: WidgetData) {
                     "⏹ Stop",
                     style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium, color = GlanceTheme.colors.primary),
                     modifier = GlanceModifier
-                        .clickable(actionRunCallback<ToggleTimerAction>())
+                        .clickable(actionRunCallback<ToggleTimerAction>(parameters = androidx.glance.action.actionParametersOf(WidgetParameters.sessionId to data.sessionId.orEmpty())))
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
@@ -203,7 +210,7 @@ private fun WidgetBody(data: WidgetData) {
                         "▶ Start",
                         style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold, color = GlanceTheme.colors.primary),
                         modifier = GlanceModifier
-                            .clickable(actionRunCallback<StartTopTaskAction>())
+                            .clickable(actionRunCallback<StartTopTaskAction>(parameters = androidx.glance.action.actionParametersOf(WidgetParameters.taskId to (data.suggestedTaskId ?: -1L))))
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                 }

@@ -21,6 +21,8 @@ sealed class Event {
         val lowerText: String? = null,
         val textColor: Int,
         val backgroundColor: Int,
+        val isPoint: Boolean = false,
+        val borderColor: Int? = null,
     ) : Event() {
         val duration: Duration = timeSpan.duration
     }

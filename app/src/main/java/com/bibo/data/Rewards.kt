@@ -1,78 +1,116 @@
 package com.bibo.data
 
 import android.content.Context
-import java.time.DayOfWeek
-import java.time.LocalDate
+import android.content.SharedPreferences
+import androidx.room.withTransaction
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import java.text.NumberFormat
 import java.time.ZoneId
-import java.time.temporal.TemporalAdjusters
+import java.util.Currency
+import java.util.Locale
 
-/**
- * The "earn treat money by doing tasks" game. Each completed task banks its reward into the
- * current week's earnings (capped at a weekly budget the user sets aside). Wishlist items
- * (хотелки) are redeemed against those earnings. Everything is computed relative to the
- * current week's Monday, so it resets on its own each week — no reset job needed.
- */
+/** USD reward game: lifetime task credits; unused weekly credit expires on Monday. */
 object Rewards {
     private const val PREFS = "rewards"
     private const val KEY_BUDGET = "weekly_budget_cents"
-    const val DEFAULT_BUDGET_CENTS = 3000 // $30 / week
+    const val DEFAULT_BUDGET_CENTS = 3000
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    fun weekStart(): Long = RewardPolicy.week(AppTime.nowMillis(), AppTime.zone()).start
+    fun budgetCents(context: Context): Int = prefs(context).getInt(KEY_BUDGET, DEFAULT_BUDGET_CENTS).coerceAtLeast(0)
 
-    private fun prefs(context: Context) =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    suspend fun setBudgetCents(context: Context, cents: Int): Boolean {
+        if (cents < 0) return false
+        return BiboDb.get(context).withTransaction {
+            if (spentCents(context) > cents) false
+            else prefs(context).edit().putInt(KEY_BUDGET, cents).commit()
+        }
+    }
+    suspend fun balance(context: Context): RewardBalance {
+        val week = RewardPolicy.week(AppTime.nowMillis(), AppTime.zone())
+        val dao = BiboDb.get(context).rewards()
+        return RewardPolicy.balance(dao.creditCentsSince(week.start, week.end),
+            dao.debitCentsSince(week.start, week.end), budgetCents(context))
+    }
+    suspend fun earnedCents(context: Context): Int = balance(context).earned
+    suspend fun spentCents(context: Context): Int = balance(context).spent
+    suspend fun availableCents(context: Context): Int = balance(context).available
 
-    /** Start of the current week (Monday 00:00, local time) as epoch millis. */
-    fun weekStart(): Long {
-        val monday = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-        return monday.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun observe(context: Context): Flow<RewardBalance> {
+        val app = context.applicationContext
+        val weeks = flow {
+            while (true) { emit(RewardPolicy.week(AppTime.nowMillis(), AppTime.zone())); delay(30_000) }
+        }.distinctUntilChanged()
+        return weeks.flatMapLatest { week ->
+            combine(BiboDb.get(app).rewards().listForWeek(week.start, week.end), budgetFlow(app)) { entries, budget ->
+                RewardPolicy.balance(entries.filter { it.kind == "CREDIT" }.sumOf { it.amountCents.toLong() },
+                    entries.filter { it.kind == "DEBIT" }.sumOf { it.amountCents.toLong() }, budget)
+            }
+        }
+    }
+    private fun budgetFlow(context: Context): Flow<Int> = callbackFlow {
+        val preferences = prefs(context)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == KEY_BUDGET) trySend(budgetCents(context))
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        trySend(budgetCents(context))
+        awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
-    fun budgetCents(context: Context): Int =
-        prefs(context).getInt(KEY_BUDGET, DEFAULT_BUDGET_CENTS)
-
-    fun setBudgetCents(context: Context, cents: Int) =
-        prefs(context).edit().putInt(KEY_BUDGET, cents.coerceAtLeast(0)).apply()
-
-    /** Money earned this week from completed tasks, capped at the weekly budget. */
-    suspend fun earnedCents(context: Context): Int =
-        BiboDb.get(context).todos().earnedCentsSince(weekStart())
-            .coerceAtMost(budgetCents(context))
-
-    /** Money already redeemed on wishlist items this week. */
-    suspend fun spentCents(context: Context): Int =
-        BiboDb.get(context).wishlist().redeemedCentsSince(weekStart())
-
-    /** What's still available to treat yourself with this week. */
-    suspend fun availableCents(context: Context): Int =
-        (earnedCents(context) - spentCents(context)).coerceAtLeast(0)
-
-    /** Treat yourself to a wishlist item if this week's earnings cover it. */
-    suspend fun redeem(context: Context, item: WishlistItem): Boolean {
-        if (item.redeemedAt != null) return false
-        if (availableCents(context) < item.priceCents) return false
-        BiboDb.get(context).wishlist().update(item.copy(redeemedAt = System.currentTimeMillis()))
-        return true
+    /** Reread item and debit under a single transaction; stale/double taps cannot spend twice. */
+    suspend fun redeem(context: Context, item: WishlistItem): Boolean = redeem(context, item.id)
+    suspend fun redeem(context: Context, itemId: Long): Boolean {
+        val db = BiboDb.get(context)
+        return db.withTransaction {
+            redeemInTransaction(db, itemId, budgetCents(context), AppTime.nowMillis(), AppTime.zone())
+        }
     }
-
-    fun format(cents: Int): String {
-        val d = cents / 100
-        val c = cents % 100
-        return if (c == 0) "$$d" else "$%d.%02d".format(d, c)
+    suspend fun saveWish(context: Context, id: Long?, name: String, cents: Int): Boolean {
+        if (name.isBlank() || cents <= 0) return false
+        val db = BiboDb.get(context)
+        return db.withTransaction {
+            if (id == null) db.wishlist().insert(WishlistItem(name = name.trim(), priceCents = cents, createdAt = AppTime.nowMillis()))
+            else {
+                val item = db.wishlist().allOnce().firstOrNull { it.id == id } ?: return@withTransaction false
+                if (item.redeemedAt != null) return@withTransaction false
+                db.wishlist().update(item.copy(name = name.trim(), priceCents = cents))
+            }
+            true
+        }
     }
-
-    /** Quick reward tiers offered when adding a task (by difficulty). */
-    val REWARD_TIERS = listOf(0, 100, 300, 500, 1000) // none, $1, $3, $5, $10
-
-    /** Rotating lines for the idle widget — gentle nudges + inspiration. */
-    val QUOTES = listOf(
-        "Small steps every day add up to big results.",
-        "\"The secret of getting ahead is getting started.\" — Mark Twain",
+    suspend fun removeWish(context: Context, id: Long) {
+        val db = BiboDb.get(context)
+        db.withTransaction { db.wishlist().allOnce().firstOrNull { it.id == id }?.let { db.wishlist().delete(it) } }
+        // Its immutable debit remains; removing a redeemed wish is not a refund.
+    }
+    fun format(cents: Int): String = NumberFormat.getCurrencyInstance(Locale.US).apply {
+        currency = Currency.getInstance("USD")
+    }.format(cents / 100.0)
+    val REWARD_TIERS = listOf(0, 100, 300, 500, 1000)
+    val QUOTES = listOf("Small steps every day add up to big results.",
         "You don't have to be great to start, but you have to start to be great.",
-        "\"Discipline is choosing between what you want now and what you want most.\"",
-        "One task. Right now. That's all it takes.",
-        "\"Well done is better than well said.\" — Benjamin Franklin",
-        "Future you is watching. Make them proud.",
-        "\"Action is the foundational key to all success.\" — Picasso",
-        "The work you avoid is usually the work that matters.",
-        "\"Do the hard jobs first. The easy jobs will take care of themselves.\"",
-    )
+        "One task. Right now. That's all it takes.", "Future you is watching. Make them proud.")
+}
+
+/** Caller owns the transaction, making credits + current-item check + debit one unit. */
+internal suspend fun redeemInTransaction(db: BiboDb, itemId: Long, budget: Int, at: Long, zone: ZoneId): Boolean {
+    val current = db.wishlist().allOnce().firstOrNull { it.id == itemId } ?: return false
+    if (current.redeemedAt != null || current.priceCents <= 0) return false
+    val week = RewardPolicy.week(at, zone)
+    val balance = RewardPolicy.balance(db.rewards().creditCentsSince(week.start, week.end),
+        db.rewards().debitCentsSince(week.start, week.end), budget)
+    if (balance.available < current.priceCents) return false
+    val inserted = db.rewards().insertIgnore(RewardEntry(entryKey = "wish:$itemId", kind = "DEBIT",
+        amountCents = current.priceCents, atMillis = at, wishlistId = itemId, label = current.name))
+    if (inserted < 0) return false
+    db.wishlist().update(current.copy(redeemedAt = at))
+    return true
 }

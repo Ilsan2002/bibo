@@ -14,18 +14,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import de.tobiasschuerg.weekview.compose.components.AllDayEventsRow
+import de.tobiasschuerg.weekview.compose.components.AllDayEventsHeader
 import de.tobiasschuerg.weekview.compose.components.DayHeaderRow
 import de.tobiasschuerg.weekview.compose.components.EventsPane
 import de.tobiasschuerg.weekview.compose.components.GridCanvas
-import de.tobiasschuerg.weekview.compose.components.MultiDayEventsRow
 import de.tobiasschuerg.weekview.compose.components.TimeAxisColumn
 import de.tobiasschuerg.weekview.compose.state.rememberWeekViewMetrics
 import de.tobiasschuerg.weekview.compose.style.WeekViewStyle
@@ -61,6 +66,7 @@ fun WeekBackgroundCompose(
     style: WeekViewStyle = defaultWeekViewStyle(),
     initialScrollTime: LocalTime? = null,
     bottomContentPadding: Dp = 0.dp,
+    zoomAnchorY: Float = 0f,
 ) {
     val metrics = rememberWeekViewMetrics(dateRange, timeRange, events, weekViewConfig.scalingFactor)
     val scrollState = rememberScrollState()
@@ -68,10 +74,26 @@ fun WeekBackgroundCompose(
     var now by remember { mutableStateOf(LocalTime.now()) }
     val density = LocalDensity.current
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = LocalTime.now()
-            delay(1000)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                now = LocalTime.now()
+                delay(60_000L - (System.currentTimeMillis() % 60_000L))
+            }
+        }
+    }
+    var previousScale by remember { mutableFloatStateOf(weekViewConfig.scalingFactor) }
+    var gridTopPx by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(weekViewConfig.scalingFactor) {
+        val scale = weekViewConfig.scalingFactor
+        if (previousScale != scale) {
+            val anchor = (zoomAnchorY - gridTopPx).coerceAtLeast(0f)
+            val target = ((scrollState.value + anchor) * scale / previousScale - anchor).toInt()
+            // Content bounds may still be from the previous frame; scroll after measurement.
+            androidx.compose.runtime.withFrameNanos { }
+            scrollState.scrollTo(target.coerceAtLeast(0))
+            previousScale = scale
         }
     }
 
@@ -90,6 +112,7 @@ fun WeekBackgroundCompose(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val availableWidth = maxWidth - metrics.leftOffsetDp
+        val viewportHeight = maxHeight
         val dynamicColumnWidthDp = if (metrics.columnCount > 0) (availableWidth / metrics.columnCount) else availableWidth
 
         Column(modifier = Modifier.fillMaxSize()) {
@@ -106,29 +129,19 @@ fun WeekBackgroundCompose(
                 )
             }
 
-            if (multiDayEvents.isNotEmpty()) {
-                MultiDayEventsRow(
+            if (multiDayEvents.isNotEmpty() || allDayEvents.isNotEmpty()) {
+                AllDayEventsHeader(
                     days = metrics.days,
-                    multiDayEvents = multiDayEvents,
+                    events = multiDayEvents + allDayEvents,
                     leftOffsetDp = metrics.leftOffsetDp,
                     columnWidth = dynamicColumnWidthDp,
+                    heightBudget = minOf(112.dp, (viewportHeight - if (weekViewConfig.showDayHeader) metrics.topOffsetDp else 0.dp).coerceAtLeast(0.dp) / 3),
                     onEventClick = onEventClick,
                     onEventLongPress = onEventLongPress,
                 )
             }
 
-            if (allDayEvents.isNotEmpty()) {
-                AllDayEventsRow(
-                    days = metrics.days,
-                    allDayEvents = allDayEvents,
-                    leftOffsetDp = metrics.leftOffsetDp,
-                    columnWidth = dynamicColumnWidthDp,
-                    onEventClick = onEventClick,
-                    onEventLongPress = onEventLongPress,
-                )
-            }
-
-            Row(modifier = Modifier.weight(1f)) {
+            Row(modifier = Modifier.weight(1f).onGloballyPositioned { gridTopPx = it.positionInParent().y }) {
                 TimeAxisColumn(
                     timeLabels = metrics.timeLabels,
                     now = now,

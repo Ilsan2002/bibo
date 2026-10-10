@@ -35,7 +35,7 @@ val Grotesk = FontFamily(
 )
 
 private val Amber = Color(0xFFFF6B3D)
-private val AmberDeep = Color(0xFFE2521F)
+private val AmberDeep = Color(0xFFB83D15)
 private val Mint = Color(0xFF4FD1A0)
 private val Coral = Color(0xFFFF5C5C)
 
@@ -67,7 +67,7 @@ private val DarkScheme = darkColorScheme(
     surfaceContainer = Color(0xFF151922),
     surfaceContainerHigh = Color(0xFF1C2130),
     surfaceContainerHighest = Color(0xFF232938),
-    outline = Color(0xFF4A536A),
+    outline = Color(0xFF9BA5BA),
     outlineVariant = Color(0xFF2C3344),
     inverseSurface = Color(0xFFEEF1F7),
     inverseOnSurface = Color(0xFF15181F),
@@ -102,7 +102,7 @@ private val LightScheme = lightColorScheme(
     surfaceContainer = Color(0xFFEFECE8),
     surfaceContainerHigh = Color(0xFFE9E6E1),
     surfaceContainerHighest = Color(0xFFE3E0DA),
-    outline = Color(0xFF7B8090),
+    outline = Color(0xFF646977),
     outlineVariant = Color(0xFFCBCFD8),
     inverseSurface = Color(0xFF2F3138),
     inverseOnSurface = Color(0xFFF1F0EC),

@@ -1,0 +1,17 @@
+CREATE TABLE IF NOT EXISTS `activity_blocks` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `startMillis` INTEGER NOT NULL, `endMillis` INTEGER NOT NULL, `source` TEXT NOT NULL, `color` INTEGER, `note` TEXT, `goalId` INTEGER);
+CREATE TABLE IF NOT EXISTS `todo_tasks` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `parentId` INTEGER, `createdAt` INTEGER NOT NULL, `completedAt` INTEGER, `startedAt` INTEGER, `sortOrder` INTEGER NOT NULL, `goalId` INTEGER, `dueEpochDay` INTEGER, `reminderAt` INTEGER, `reminderNote` TEXT, `rewardCents` INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS `usage_sessions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `packageName` TEXT NOT NULL, `label` TEXT NOT NULL, `startMillis` INTEGER NOT NULL, `endMillis` INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS `index_usage_sessions_packageName_startMillis` ON `usage_sessions` (`packageName`, `startMillis`);
+CREATE TABLE IF NOT EXISTS `website_sessions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `domain` TEXT NOT NULL, `startMillis` INTEGER NOT NULL, `endMillis` INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS `index_website_sessions_startMillis` ON `website_sessions` (`startMillis`);
+CREATE TABLE IF NOT EXISTS `habit_days` (`epochDay` INTEGER NOT NULL, `showered` INTEGER NOT NULL, `cleanClothes` INTEGER NOT NULL, `workedOut` INTEGER NOT NULL, `prayed` INTEGER NOT NULL, PRIMARY KEY(`epochDay`));
+CREATE TABLE IF NOT EXISTS `food_entries` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `epochDay` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `label` TEXT NOT NULL, `calories` INTEGER NOT NULL, `sugarG` REAL NOT NULL, `caffeineMg` INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS `index_food_entries_epochDay` ON `food_entries` (`epochDay`);
+CREATE TABLE IF NOT EXISTS `goals` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `color` INTEGER NOT NULL, `targetDate` INTEGER, `createdAt` INTEGER NOT NULL, `archived` INTEGER NOT NULL, `details` TEXT);
+CREATE TABLE IF NOT EXISTS `chat_messages` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `epochDay` INTEGER NOT NULL, `role` TEXT NOT NULL, `content` TEXT NOT NULL, `createdAt` INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS `index_chat_messages_epochDay` ON `chat_messages` (`epochDay`);
+CREATE TABLE IF NOT EXISTS `chat_days` (`epochDay` INTEGER NOT NULL, `digest` TEXT NOT NULL, PRIMARY KEY(`epochDay`));
+CREATE TABLE IF NOT EXISTS `wishlist_items` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `priceCents` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `redeemedAt` INTEGER);
+CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT);
+INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5709706e171a3557fd36ea6bdcea891e');
+PRAGMA user_version=12;

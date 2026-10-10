@@ -11,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -38,6 +39,7 @@ internal fun DayHeaderRow(
     highlightCurrentDay: Boolean = true,
     eventConfig: EventConfig = EventConfig(),
 ) {
+    val locale = LocalConfiguration.current.locales[0] ?: Locale.ROOT
     Row {
         Box(modifier = Modifier.size(leftOffsetDp, topOffsetDp))
         days.forEach { date ->
@@ -71,9 +73,9 @@ internal fun DayHeaderRow(
                 }
             val dayName =
                 if (eventConfig.alwaysUseFullName) {
-                    date.dayOfWeek.getDisplayName(FULL, Locale.getDefault())
+                    date.dayOfWeek.getDisplayName(FULL, locale)
                 } else {
-                    date.dayOfWeek.getDisplayName(SHORT, Locale.getDefault())
+                    date.dayOfWeek.getDisplayName(SHORT, locale)
                 }
             val shortDate = date.toShortDateStringWithoutYear()
             Column(

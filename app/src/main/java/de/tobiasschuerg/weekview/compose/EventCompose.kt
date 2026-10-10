@@ -1,7 +1,9 @@
 package de.tobiasschuerg.weekview.compose
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,7 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,6 +39,7 @@ import java.time.LocalTime
  * depend on the block's rendered height, so short blocks stay readable
  * instead of clipping three lines of text. Also enforces a minimum height.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EventCompose(
     modifier: Modifier = Modifier,
@@ -55,7 +58,8 @@ fun EventCompose(
             startTime = startTime,
             scalingFactor = scalingFactor,
         )
-    val eventHeight = if (rawHeight < 14.dp) 14.dp else rawHeight
+    val eventHeight = if (event.isPoint) 32.dp else rawHeight
+    val showTitle = event.isPoint || eventHeight >= 14.dp
 
     val eventWidth = columnWidth * eventLayout.widthFraction
     val horizontalOffset = columnWidth * eventLayout.offsetFraction
@@ -81,12 +85,13 @@ fun EventCompose(
                 .let { if (eventConfig.eventSpacingDp > 0) it.padding(eventConfig.eventSpacingDp.dp) else it }
                 .clip(RoundedCornerShape(6.dp))
                 .background(backgroundColor)
-                .pointerInput(event.id) {
-                    detectTapGestures(
-                        onTap = { onEventClick?.invoke(event) },
-                        onLongPress = { onEventLongPress?.invoke(event) },
-                    )
-                }
+                .let { base -> event.borderColor?.let { base.border(1.dp, Color(it), RoundedCornerShape(6.dp)) } ?: base }
+                .combinedClickable(
+                    role = Role.Button,
+                    onClickLabel = "Details for ${event.title}, ${event.timeSpan.start.toLocalString()}, ${event.subTitle.orEmpty()}",
+                    onClick = { onEventClick?.invoke(event) },
+                    onLongClick = onEventLongPress?.let { callback -> { callback(event) } },
+                )
                 .padding(horizontal = 6.dp, vertical = if (compact) 1.dp else 3.dp),
     ) {
         Column(
@@ -97,8 +102,8 @@ fun EventCompose(
             horizontalAlignment = Alignment.Start,
             verticalArrangement = if (compact) Arrangement.Center else Arrangement.Top,
         ) {
-            Text(
-                text = event.title,
+            if (showTitle) Text(
+                text = if (event.isPoint) "• ${event.title}" else event.title,
                 color = textColor,
                 fontSize = if (compact) 10.sp else 12.sp,
                 lineHeight = if (compact) 11.sp else 14.sp,
@@ -119,7 +124,7 @@ fun EventCompose(
             }
 
             if (showTime) {
-                val timeText = "${event.timeSpan.start.toLocalString()} – ${event.timeSpan.endExclusive.toLocalString()}"
+                val timeText = "${event.timeSpan.start.toLocalString()} – ${if (event.timeSpan.endSecondExclusive == 86400.0) "24:00" else event.timeSpan.endExclusive.toLocalString()}"
                 Text(
                     text = timeText,
                     color = textColor.copy(alpha = 0.75f),

@@ -1,13 +1,25 @@
 package com.bibo.data
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
+import android.os.SystemClock
+import android.provider.Settings
 import androidx.glance.appwidget.updateAll
+import androidx.room.withTransaction
 import com.bibo.widget.BiboWidget
-import kotlinx.coroutines.CoroutineScope
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
-/** Everything a focus session carries beyond a plain timer. */
 data class FocusConfig(
     val intention: String,
     val goalId: Long? = null,
@@ -16,237 +28,247 @@ data class FocusConfig(
     val workMin: Int = 25,
     val breakMin: Int = 5,
     val dnd: Boolean = false,
+    val taskId: Long? = null,
 )
 
-/**
- * Source of truth for the running timer / focus session, shared by the Focus screen, the
- * accessibility blocker, the Quick Settings tile, and the widget. State lives in
- * SharedPreferences; a finished session is written to Room as an ActivityBlock.
- */
+/** Room owns sessions and history; all surfaces submit identity-scoped commands. */
 object TimerController {
     const val PREFS = "bibo_timer"
     const val KEY_START = "running_start"
     const val KEY_TITLE = "running_title"
-    private const val KEY_FOCUS = "is_focus"
-    private const val KEY_GOAL = "goal_id"
-    private const val KEY_BLOCKED = "blocked_apps"
-    private const val KEY_DND = "dnd"
-    private const val KEY_POMO = "pomodoro"
-    private const val KEY_WORK = "work_min"
-    private const val KEY_BREAK = "break_min"
-    private const val KEY_PHASE = "phase" // WORK / BREAK
-    private const val KEY_PHASE_END = "phase_end"
-    private const val KEY_POMOS = "pomos_done"
-    private const val KEY_TASK_ID = "task_id" // set when this timer is a to-do task's timer
-    private const val KEY_COMMENT = "start_comment" // mentor's cheer, shown in the notification
-
     const val PHASE_WORK = "WORK"
     const val PHASE_BREAK = "BREAK"
+    private val commands = Mutex()
+    private val initialization = Mutex()
+    private val effects = Mutex()
+    @Volatile private var initialized = false
+    private var observer: Job? = null
+    private val mutableState = MutableStateFlow<WorkSession?>(null)
+    val state: StateFlow<WorkSession?> = mutableState
+    private val mutableError = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = mutableError
 
-    private fun prefs(context: Context) =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun defaults(context: Context) = context.getSharedPreferences("bibo_focus_defaults", Context.MODE_PRIVATE)
+    fun lastBlockedApps(context: Context): Set<String> = defaults(context).getStringSet("last_blocked_apps", emptySet())?.toSet().orEmpty()
+    fun sessionId(context: Context): String? = state.value?.id
+    fun runningStart(context: Context): Long = state.value?.startMillis ?: 0
+    fun runningTitle(context: Context): String = state.value?.title.orEmpty()
+    fun isRunning(context: Context): Boolean = state.value != null
+    fun isFocus(context: Context): Boolean = state.value?.kind == "FOCUS"
+    fun goalId(context: Context): Long? = state.value?.goalId
+    fun linkedTaskId(context: Context): Long? = state.value?.taskId
+    fun comment(context: Context): String = state.value?.comment.orEmpty()
+    fun blockedApps(context: Context): Set<String> = state.value?.blockedPackages.orEmpty().split(',').filter { it.isNotBlank() }.toSet()
+    fun isPomodoro(context: Context): Boolean = state.value?.pomodoro == true
+    fun workMin(context: Context): Int = state.value?.workMin ?: 25
+    fun breakMin(context: Context): Int = state.value?.breakMin ?: 5
+    fun elapsedMillis(context: Context): Long = state.value?.let(::elapsed) ?: 0
+    fun elapsedMillis(session: WorkSession): Long = elapsed(session)
+    fun phase(context: Context): String = currentPhase()?.kind ?: PHASE_WORK
+    fun phaseEnd(context: Context): Long = currentPhase()?.let { AppTime.nowMillis() + it.remainingMillis } ?: 0
+    fun pomodorosDone(context: Context): Int = currentPhase()?.pomodorosDone?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
+    fun acknowledgeError() { mutableError.value = null }
+    private fun elapsed(s: WorkSession): Long = SessionTiming.elapsed(s.elapsedAnchorMillis, s.elapsedAtAnchorMillis, SystemClock.elapsedRealtime())
+    private fun currentPhase(): SessionTiming.Phase? = state.value?.let { SessionTiming.phase(elapsed(it), it.workMin, it.breakMin) }
+    private fun bootCount(context: Context): Int = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, 0)
 
-    // The running-session prefs get wiped (clear()) on every start/stop, so the user's
-    // last-used block-list — the default the mentor reuses for "block distractions" — is
-    // kept in a small separate file that survives.
-    private const val DEFAULTS_PREFS = "bibo_focus_defaults"
-    private const val KEY_LAST_BLOCKED = "last_blocked_apps"
-
-    private fun defaultsPrefs(context: Context) =
-        context.getSharedPreferences(DEFAULTS_PREFS, Context.MODE_PRIVATE)
-
-    /** The apps the user blocked in their most recent focus session (empty if never used). */
-    fun lastBlockedApps(context: Context): Set<String> =
-        defaultsPrefs(context).getStringSet(KEY_LAST_BLOCKED, emptySet()) ?: emptySet()
-
-    fun runningStart(context: Context): Long = prefs(context).getLong(KEY_START, 0L)
-    fun runningTitle(context: Context): String = prefs(context).getString(KEY_TITLE, "") ?: ""
-    fun isRunning(context: Context): Boolean = runningStart(context) > 0L
-    fun isFocus(context: Context): Boolean = prefs(context).getBoolean(KEY_FOCUS, false)
-    fun goalId(context: Context): Long? = prefs(context).getLong(KEY_GOAL, -1L).takeIf { it > 0 }
-
-    fun blockedApps(context: Context): Set<String> =
-        prefs(context).getString(KEY_BLOCKED, "").orEmpty()
-            .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-
-    /** The to-do task this timer is timing, if any (play pressed from the Tasks list). */
-    fun linkedTaskId(context: Context): Long? =
-        prefs(context).getLong(KEY_TASK_ID, -1L).takeIf { it > 0 }
-
-    /** The mentor's cheer for this session, once it has come back (shown on the lock screen). */
-    fun comment(context: Context): String = prefs(context).getString(KEY_COMMENT, "").orEmpty()
-
-    /**
-     * Ask the mentor for a supportive comment for the session that just started and, when it
-     * arrives, stash it and refresh the notification so it appears on the lock screen. Fully
-     * async — starting the timer is never blocked on the network.
-     */
-    private fun requestComment(context: Context, title: String, goalId: Long?) {
-        val appContext = context.applicationContext
-        val startedAt = runningStart(appContext)
-        CoroutineScope(Dispatchers.IO).launch {
-            val comment = runCatching { com.bibo.ui.Mentor.startComment(appContext, title, goalId) }.getOrNull()
-            // Only apply it if this same session is still the one running.
-            if (!comment.isNullOrBlank() && runningStart(appContext) == startedAt) {
-                prefs(appContext).edit().putString(KEY_COMMENT, comment).apply()
-                TimerService.refreshNotification(appContext)
-            }
-        }
-    }
-
-    fun isPomodoro(context: Context): Boolean = prefs(context).getBoolean(KEY_POMO, false)
-    fun workMin(context: Context): Int = prefs(context).getInt(KEY_WORK, 25)
-    fun breakMin(context: Context): Int = prefs(context).getInt(KEY_BREAK, 5)
-    fun phase(context: Context): String = prefs(context).getString(KEY_PHASE, PHASE_WORK) ?: PHASE_WORK
-    fun phaseEnd(context: Context): Long = prefs(context).getLong(KEY_PHASE_END, 0L)
-    fun pomodorosDone(context: Context): Int = prefs(context).getInt(KEY_POMOS, 0)
-
-    // ---- lifecycle -----------------------------------------------------------
-
-    /** Start a plain quick timer (Quick Settings tile / widget). */
-    fun startTimer(context: Context, title: String) {
-        if (isRunning(context)) stopTimer(context) // close out whatever was running first
-        prefs(context).edit().clear()
-            .putLong(KEY_START, System.currentTimeMillis())
-            .putString(KEY_TITLE, title)
-            .putBoolean(KEY_FOCUS, false)
-            .apply()
-        TimerService.start(context)
-        requestComment(context, title, null)
-    }
-
-    /**
-     * Start (or switch to) timing a specific to-do task. This is the same shared timer the
-     * Focus page shows, so pressing play in the Tasks list makes the session appear there
-     * (and in the notification / widget) too. Also stamps the task's startedAt so its row
-     * shows a live elapsed time.
-     */
-    fun startTask(context: Context, taskId: Long, title: String, goalId: Long?) {
-        if (isRunning(context)) stopTimer(context) // close out whatever was running first
-        val now = System.currentTimeMillis()
-        prefs(context).edit().clear()
-            .putLong(KEY_START, now)
-            .putString(KEY_TITLE, title.ifBlank { "Task" })
-            .putBoolean(KEY_FOCUS, false)
-            .putLong(KEY_GOAL, goalId ?: -1L)
-            .putLong(KEY_TASK_ID, taskId)
-            .apply()
-        TimerService.start(context)
-        requestComment(context, title, goalId)
-        val appContext = context.applicationContext
-        CoroutineScope(Dispatchers.IO).launch {
-            val db = BiboDb.get(appContext)
-            db.todos().byId(taskId)?.let { db.todos().update(it.copy(startedAt = now)) }
-        }
-    }
-
-    /** Start a full focus session with its blocking, DND, and Pomodoro settings. */
-    fun startFocus(context: Context, config: FocusConfig) {
-        if (isRunning(context)) stopTimer(context) // close out whatever was running first
-        val now = System.currentTimeMillis()
-        prefs(context).edit().clear()
-            .putLong(KEY_START, now)
-            .putString(KEY_TITLE, config.intention.ifBlank { "Focus" })
-            .putBoolean(KEY_FOCUS, true)
-            .putLong(KEY_GOAL, config.goalId ?: -1L)
-            .putString(KEY_BLOCKED, config.blockedApps.joinToString(","))
-            .putBoolean(KEY_DND, config.dnd)
-            .putBoolean(KEY_POMO, config.pomodoro)
-            .putInt(KEY_WORK, config.workMin)
-            .putInt(KEY_BREAK, config.breakMin)
-            .putString(KEY_PHASE, PHASE_WORK)
-            .putLong(KEY_PHASE_END, if (config.pomodoro) now + config.workMin * 60_000L else 0L)
-            .putInt(KEY_POMOS, 0)
-            .apply()
-        // Remember this block-list as the default so the mentor can reuse it later.
-        if (config.blockedApps.isNotEmpty()) {
-            defaultsPrefs(context).edit()
-                .putStringSet(KEY_LAST_BLOCKED, config.blockedApps).apply()
-        }
-        if (config.dnd) FocusDnd.enable(context)
-        TimerService.start(context)
-        requestComment(context, config.intention.ifBlank { "Focus" }, config.goalId)
-    }
-
-    /** Pomodoro phase transition, driven by the service when a phase's time is up. */
-    fun advancePhase(context: Context): String {
-        val p = prefs(context)
-        val now = System.currentTimeMillis()
-        return if (phase(context) == PHASE_WORK) {
-            p.edit()
-                .putString(KEY_PHASE, PHASE_BREAK)
-                .putLong(KEY_PHASE_END, now + breakMin(context) * 60_000L)
-                .putInt(KEY_POMOS, pomodorosDone(context) + 1)
-                .apply()
-            PHASE_BREAK
-        } else {
-            p.edit()
-                .putString(KEY_PHASE, PHASE_WORK)
-                .putLong(KEY_PHASE_END, now + workMin(context) * 60_000L)
-                .apply()
-            PHASE_WORK
-        }
-    }
-
-    /** Stop the running session, optionally with a reflection, and persist it. */
-    fun stopTimer(context: Context, reflection: String? = null) {
-        val p = prefs(context)
-        val start = runningStart(context)
-        val title = runningTitle(context).ifBlank { "Untitled activity" }
-        val focus = isFocus(context)
-        val goal = goalId(context)
-        val taskId = linkedTaskId(context)
-        val hadDnd = p.getBoolean(KEY_DND, false)
-        p.edit().clear().apply()
-
-        if (hadDnd) FocusDnd.disable(context)
-        TimerService.stop(context)
-
-        val appContext = context.applicationContext
-        val end = System.currentTimeMillis()
-        // A task's timer saves a TODO block (so it lands on the calendar like a completed
-        // task) carrying the task's goal; a plain timer / focus session keeps its own kind.
-        val source = when {
-            taskId != null -> "TODO"
-            focus -> "FOCUS"
-            else -> "TIMER"
-        }
-        val block = if (start > 0L && end - start >= 10_000L) {
-            ActivityBlock(
-                title = title,
-                startMillis = start,
-                endMillis = end,
-                source = source,
-                note = reflection?.trim()?.ifBlank { null },
-                goalId = if (taskId != null || focus) goal else null,
-            )
-        } else {
-            null
-        }
-        CoroutineScope(Dispatchers.IO).launch {
-            val db = BiboDb.get(appContext)
-            if (block != null) db.activityBlocks().insert(block)
-            // Stop the linked task's row spinner too (pausing from either screen).
-            if (taskId != null) {
-                db.todos().byId(taskId)?.let {
-                    if (it.startedAt != null) db.todos().update(it.copy(startedAt = null))
+    suspend fun initialize(context: Context) {
+        initialization.withLock {
+            if (initialized) return
+            val app = context.applicationContext
+            val db = BiboDb.get(app)
+            db.withTransaction {
+                val legacy = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                if (db.workSessions().active() == null && legacy.getLong(KEY_START, 0) > 0 && db.workSessions().byId("legacy-${legacy.getLong(KEY_START, 0)}") == null) {
+                    val start = legacy.getLong(KEY_START, 0)
+                    val end = AppTime.nowMillis().coerceAtLeast(start)
+                    db.activityBlocks().insert(ActivityBlock(title = legacy.getString(KEY_TITLE, "Recovered activity").orEmpty(), startMillis = start, endMillis = end,
+                        source = "LEGACY_TIMER", provenance = "LEGACY", note = "Recovered legacy timer. Review its end time; uninterrupted duration could not be verified."))
+                    db.workSessions().insert(WorkSession(id = "legacy-$start", activeSlot = null, status = "INTERRUPTED", title = "Recovered activity", kind = "LEGACY", startMillis = start,
+                        elapsedAnchorMillis = 0, elapsedAtAnchorMillis = 0, lastCheckpointMillis = end, bootCount = bootCount(app), endMillis = end))
+                    mutableError.value = "Recovered an earlier timer. Review its calendar end time."
+                }
+                val active = db.workSessions().active()
+                val userStopped = if (Build.VERSION.SDK_INT >= 30 && active != null) {
+                    val manager = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    runCatching { manager.getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()?.let {
+                        it.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED && it.timestamp >= active.lastCheckpointMillis
+                    } == true }.getOrDefault(false)
+                } else false
+                if (active != null && (active.bootCount != bootCount(app) || SystemClock.elapsedRealtime() < active.elapsedAnchorMillis || userStopped)) {
+                    recordEnd(db, active, active.elapsedAtAnchorMillis, null, "INTERRUPTED")
+                    mutableError.value = "Previous session was interrupted. Saved its last confirmed work."
+                }
+                if (db.workSessions().active() == null) {
+                    // Preserve contradictory legacy timestamps before clearing their
+                    // live flags; their duration is unknown, so create no measured block.
+                    for (task in (db.todos().allOnce() + db.todos().deletedOnce()).filter { it.startedAt != null }) {
+                        val receiptId = "legacy-task:${task.id}:${task.startedAt}"
+                        if (db.workSessions().byId(receiptId) == null) db.workSessions().insert(WorkSession(
+                            id = receiptId, activeSlot = null, status = "INTERRUPTED", title = task.title, kind = "LEGACY", taskId = task.id, goalId = task.goalId,
+                            startMillis = task.startedAt!!, elapsedAnchorMillis = 0, lastCheckpointMillis = AppTime.nowMillis(), bootCount = bootCount(app),
+                            note = "Earlier task timer start preserved. Its elapsed work could not be verified."))
+                    }
+                    db.workSessions().clearLegacyTaskMarkers()
                 }
             }
-            runCatching { BiboWidget().updateAll(appContext) }
+            mutableState.value = db.workSessions().active()
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+            initialized = true
+            observer = AppScope.io.launch { db.workSessions().activeFlow().collect { mutableState.value = it } }
         }
     }
 
-    /**
-     * Tear the running timer down WITHOUT writing a block — for when the caller persists
-     * the activity itself (e.g. completing a task writes its own TODO block).
-     */
-    fun clear(context: Context) {
-        val p = prefs(context)
-        val hadDnd = p.getBoolean(KEY_DND, false)
-        p.edit().clear().apply()
-        if (hadDnd) FocusDnd.disable(context)
-        TimerService.stop(context)
-        val appContext = context.applicationContext
-        CoroutineScope(Dispatchers.IO).launch { runCatching { BiboWidget().updateAll(appContext) } }
+    suspend fun resetForDatabaseReplacement(context: Context) {
+        commands.withLock {
+            observer?.cancelAndJoin()
+            observer = null
+            initialized = false
+            mutableState.value = null
+            withContext(Dispatchers.Main) { FocusDnd.disable(context); TimerService.stop(context) }
+        }
+    }
+
+    /** Finish confirmed work before the backup gate closes, holding command ordering. */
+    suspend fun prepareForBackup(context: Context, beginMaintenance: () -> Unit = {}) {
+        initialize(context)
+        commands.withLock {
+            val db = BiboDb.get(context)
+            db.withTransaction { db.workSessions().active()?.let { recordEnd(db, it, elapsed(it), null, "INTERRUPTED") } }
+            observer?.cancelAndJoin()
+            mutableState.value = null
+            observer = null
+            initialized = false
+            withContext(Dispatchers.Main) { FocusDnd.disable(context); TimerService.stop(context) }
+            beginMaintenance()
+        }
+    }
+
+    fun startTimer(context: Context, title: String) { submit { startTimerAwait(context, title) } }
+    fun startTask(context: Context, taskId: Long, title: String, goalId: Long?) { submit { startTaskAwait(context, taskId, title, goalId) } }
+    fun startFocus(context: Context, config: FocusConfig) { submit { startFocusAwait(context, config) } }
+    fun stopTimer(context: Context, reflection: String? = null) {
+        val id = state.value?.id ?: return
+        submit { stopSession(context, id, reflection) }
+    }
+    fun clear(context: Context) = stopTimer(context)
+    private fun submit(action: suspend () -> Result<*>) { AppScope.io.launch { action().exceptionOrNull()?.let { mutableError.value = it.message ?: "Session could not be saved. Try again." } } }
+
+    suspend fun startTimerAwait(context: Context, title: String, requireIdle: Boolean = true): Result<String> =
+        start(context, title.ifBlank { "Quick timer" }, "TIMER", null, null, null, requireIdle)
+    suspend fun startTaskAwait(context: Context, taskId: Long, title: String, goalId: Long?, requireIdle: Boolean = true): Result<String> =
+        start(context, title, "TASK", taskId, goalId, null, requireIdle)
+    suspend fun startFocusAwait(context: Context, config: FocusConfig, commandId: String? = null, requireIdle: Boolean = true): Result<String> =
+        start(context, config.intention.trim().ifBlank { "Focus" }, "FOCUS", config.taskId, config.goalId, config, requireIdle, commandId)
+
+    private suspend fun start(context: Context, title: String, kind: String, taskId: Long?, goalId: Long?, config: FocusConfig?, requireIdle: Boolean, commandId: String? = null): Result<String> = runCatching {
+        initialize(context)
+        commands.withLock {
+            val db = BiboDb.get(context)
+            val id = if (commandId == null) UUID.randomUUID().toString() else UUID.nameUUIDFromBytes("bibo-session-command:$commandId".toByteArray(Charsets.UTF_8)).toString()
+            if (commandId != null && db.workSessions().byId(id) != null) return@withLock id
+            if (!config?.blockedApps.isNullOrEmpty()) check(isWebTrackingEnabled(context) && Capabilities.accessibilityServiceConnected(context)) { "Enable Bibo app blocking in Accessibility settings before starting this preset." }
+            if (config?.dnd == true) check(FocusDnd.hasAccess(context)) { "Allow Do Not Disturb access before starting this preset." }
+            val wall = AppTime.nowMillis()
+            val monotonic = SystemClock.elapsedRealtime()
+            db.withTransaction {
+                val previous = db.workSessions().active()
+                check(!requireIdle || previous == null) { "Another session is running. Stop it before starting this activity." }
+                val task = taskId?.let { db.todos().byId(it) }
+                if (goalId != null && taskId == null) check(db.goals().allOnce().any { it.id == goalId }) { "This goal is no longer available. Choose another goal." }
+                if (taskId != null) check(task != null && task.deletedAt == null && task.completedAt == null && (task.parentId == null || db.todos().byId(task.parentId)?.let { it.completedAt == null && it.deletedAt == null } == true)) { "This task is no longer available to start." }
+                previous?.let { recordEnd(db, it, elapsed(it), null) }
+                val session = WorkSession(id = id, title = task?.title ?: title, kind = kind, taskId = taskId, goalId = if (task != null) task.goalId else goalId,
+                    startMillis = wall, elapsedAnchorMillis = monotonic, lastCheckpointMillis = wall, bootCount = bootCount(context),
+                    pomodoro = config?.pomodoro == true, workMin = (config?.workMin ?: 25).coerceIn(1, 180), breakMin = (config?.breakMin ?: 5).coerceIn(1, 60),
+                    blockedPackages = config?.blockedApps?.joinToString(",").orEmpty(), dnd = config?.dnd == true)
+                db.workSessions().insert(session)
+                taskId?.let { db.workSessions().setTaskRunning(it, wall) }
+            }
+            mutableState.value = db.workSessions().active()
+            if (config != null) defaults(context).edit().putStringSet("last_blocked_apps", config.blockedApps).apply()
+            try { reconcile(context) } catch (e: Exception) {
+                db.withTransaction { db.workSessions().active()?.takeIf { it.id == id }?.let { recordEnd(db, it, elapsed(it), null, "INTERRUPTED") } }
+                mutableState.value = db.workSessions().active()
+                FocusDnd.disable(context)
+                throw IllegalStateException("Session could not start: ${e.message ?: "background startup denied"}", e)
+            }
+            requestComment(context, id, mutableState.value?.title ?: title, goalId)
+            id
+        }
+    }.onFailure { mutableError.value = it.message }
+
+    suspend fun stopSession(context: Context, sessionId: String, reflection: String? = null): Result<String?> = runCatching {
+        initialize(context)
+        commands.withLock {
+            val db = BiboDb.get(context)
+            val stopped = db.withTransaction {
+                val session = db.workSessions().active()?.takeIf { it.id == sessionId } ?: return@withTransaction null
+                recordEnd(db, session, elapsed(session), reflection)
+                session.id
+            }
+            try { reconcile(context) } catch (e: Exception) { mutableError.value = "Session saved. Phone or widget cleanup needs retry: ${e.message.orEmpty()}" }
+            stopped
+        }
+    }.onFailure { mutableError.value = it.message }
+
+    /** Called inside TaskCommands' Room transaction. No platform side effects or mutex. */
+    suspend fun finishSessionInTransaction(context: Context, affectedTaskIds: Set<Long>) {
+        val db = BiboDb.get(context)
+        db.workSessions().active()?.takeIf { it.taskId in affectedTaskIds }?.let { recordEnd(db, it, elapsed(it), null) }
+    }
+
+    private suspend fun recordEnd(db: BiboDb, session: WorkSession, elapsedMillis: Long, note: String?, status: String = "FINISHED") {
+        SessionFinalizer.finishInTransaction(db, session.id, elapsedMillis, note, status)
+    }
+
+    suspend fun attachReflection(context: Context, sessionId: String, note: String): Result<Unit> = runCatching {
+        val db = BiboDb.get(context)
+        db.withTransaction {
+            val saved = db.workSessions().byId(sessionId)
+            check(saved != null && saved.activeSlot == null) { "This session has not ended." }
+            val clean = note.trim().takeIf { it.isNotEmpty() }
+            db.workSessions().setReflection(sessionId, clean)
+            db.sessionSegments().setReflection(sessionId, clean)
+        }
+    }.onFailure { mutableError.value = it.message }
+
+    suspend fun checkpoint(context: Context) {
+        val db = BiboDb.get(context)
+        db.withTransaction {
+            db.workSessions().active()?.let {
+                val updated = it.copy(elapsedAtAnchorMillis = elapsed(it), elapsedAnchorMillis = SystemClock.elapsedRealtime(), lastCheckpointMillis = AppTime.nowMillis())
+                db.workSessions().update(updated)
+            }
+        }
+        mutableState.value = db.workSessions().active()
+    }
+
+    /** Retryable platform projections. Invoke after the caller's transaction commits. */
+    suspend fun reconcile(context: Context) {
+        initialize(context)
+        effects.withLock {
+            mutableState.value = BiboDb.get(context).workSessions().active()
+            val session = mutableState.value
+            withContext(Dispatchers.Main) {
+                if (session == null) { FocusDnd.disable(context); TimerService.stop(context) }
+                else { FocusDnd.reconcile(context, session); TimerService.start(context) }
+                android.service.quicksettings.TileService.requestListeningState(context, android.content.ComponentName(context, com.bibo.tile.TimerTile::class.java))
+            }
+            runCatching { BiboWidget().updateAll(context.applicationContext) }
+        }
+    }
+
+    private fun requestComment(context: Context, sessionId: String, title: String, goalId: Long?) {
+        val app = context.applicationContext
+        if (!defaults(app).getBoolean("session_comment", false)) return
+        AppScope.io.launch {
+            val comment = runCatching { com.bibo.ui.Mentor.startComment(app, title, goalId) }.getOrNull()
+            if (!comment.isNullOrBlank()) {
+                BiboDb.get(app).workSessions().setComment(sessionId, comment)
+                mutableState.value = BiboDb.get(app).workSessions().active()
+                TimerService.refreshNotification(app)
+            }
+        }
     }
 }

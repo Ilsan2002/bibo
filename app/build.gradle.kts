@@ -15,8 +15,9 @@ android {
         applicationId = "com.bibo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        versionCode = 2
+        versionName = "0.2"
     }
 
     buildTypes {
@@ -29,6 +30,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    testOptions { unitTests.isReturnDefaultValues = true }
+
+    sourceSets["androidTest"].assets.srcDir("schemas")
 
     buildFeatures {
         compose = true
@@ -61,10 +66,23 @@ dependencies {
     implementation(libs.glance.material3)
     implementation(libs.graphics.shapes)
     implementation(libs.genai.prompt)
-    implementation(libs.entity.extraction)
     implementation(libs.adaptive)
     implementation(libs.adaptive.layout)
     implementation(libs.adaptive.navigation)
     implementation(libs.okhttp)
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
+    implementation("androidx.work:work-runtime-ktx:2.11.1")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test:core-ktx:1.7.0")
+    androidTestImplementation("androidx.room:room-testing:2.8.4")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     debugImplementation(libs.compose.ui.tooling)
 }
+
+// Versioned schemas make migrations reviewable and testable.
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }

@@ -1,1065 +1,487 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.bibo.ui
 
-import androidx.compose.foundation.ExperimentalFoundationApi
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.DragIndicator
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.SubdirectoryArrowRight
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.rememberSwipeToDismissBoxState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateSetOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.toMutableStateList
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
-import com.bibo.data.ActivityBlock
-import com.bibo.data.AppScope
-import com.bibo.data.BiboDb
-import com.bibo.data.Goal
-import com.bibo.data.Rewards
-import com.bibo.data.TimerController
-import com.bibo.data.TodoTask
-import java.time.LocalDate
-import java.time.ZoneId
-import kotlinx.coroutines.Dispatchers
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.bibo.data.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
 @Composable
-fun TodoScreen() {
+fun TodoScreen(initialTaskId: Long? = null, initialGoalId: Long? = null, onNavigationConsumed: () -> Unit = {}) {
     val context = LocalContext.current
-    val db = remember { BiboDb.get(context) }
+    val vm: TaskViewModel = viewModel()
+    val tasks by vm.tasks.collectAsStateWithLifecycle()
+    val deletedTasks by vm.deleted.collectAsStateWithLifecycle()
+    val tasksLoaded by vm.tasksLoaded.collectAsStateWithLifecycle()
+    val goalsLoaded by vm.goalsLoaded.collectAsStateWithLifecycle()
+    val allGoals by vm.goals.collectAsStateWithLifecycle()
+    val goals = allGoals.filter { !it.archived }
+    val wallet by vm.wallet.collectAsStateWithLifecycle()
+    val activeSession by TimerController.state.collectAsStateWithLifecycle()
+    val filterId by vm.filterGoalId.collectAsStateWithLifecycle()
+    val profileId by vm.profileGoalId.collectAsStateWithLifecycle()
+    val archiveVisible by vm.showArchive.collectAsStateWithLifecycle()
+    val draft by vm.draft.collectAsStateWithLifecycle()
+    val goalDraft by vm.goalDraft.collectAsStateWithLifecycle()
+    val pending by vm.pending.collectAsStateWithLifecycle()
+    val commandError by vm.error.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val zone = remember { ZoneId.systemDefault() }
-    val haptics = rememberHaptics()
-    val snackbarHostState = remember { SnackbarHostState() }
-
-    val tasks by db.todos().all().collectAsState(initial = emptyList())
-    val goals by db.goals().all().collectAsState(initial = emptyList())
-    val goalsById = goals.associateBy { it.id }
-
-    var addSheetParent by remember { mutableStateOf<TodoTask?>(null) }
-    var showAddSheet by remember { mutableStateOf(false) }
-    var editTask by remember { mutableStateOf<TodoTask?>(null) }
-    var archiveExpanded by remember { mutableStateOf(false) }
-    var filterGoalId by remember { mutableStateOf<Long?>(null) }
-    var showGoalEditor by remember { mutableStateOf(false) }
-    var editGoal by remember { mutableStateOf<Goal?>(null) }
-    var profileGoal by remember { mutableStateOf<Goal?>(null) }
-    var showTreats by remember { mutableStateOf(false) }
-    // Treat money earned this week — recomputed whenever tasks change (e.g. one completed).
-    var earnedThisWeek by remember { mutableIntStateOf(0) }
-    LaunchedEffect(tasks) {
-        earnedThisWeek = withContext(Dispatchers.IO) { Rewards.earnedCents(context) }
-    }
-
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val anyRunning = tasks.any { it.startedAt != null }
-    LaunchedEffect(anyRunning) {
-        while (anyRunning) {
-            now = System.currentTimeMillis()
-            delay(1000)
+    var now by remember { mutableLongStateOf(AppTime.nowMillis()) }
+    LaunchedEffect(Unit) { while (true) { now = AppTime.nowMillis(); delay(1_000) } }
+    LaunchedEffect(vm) {
+        vm.notices.collect { notice ->
+            val result = snackbar.showSnackbar(notice.message, if (notice.undo != null) "Undo" else null,
+                duration = if (notice.undo != null) SnackbarDuration.Long else SnackbarDuration.Short)
+            if (result == SnackbarResult.ActionPerformed) scope.launch {
+                try { notice.undo?.invoke() } catch (error: Exception) { snackbar.showSnackbar(error.message ?: "Undo failed") }
+            }
         }
     }
-
-    val startOfToday = LocalDate.now().atStartOfDay(zone).toInstant().toEpochMilli()
-
-    // Parents whose subtasks are expanded (collapsed by default so big tasks stay tidy).
-    val expandedParents = remember { mutableStateSetOf<Long>() }
-
+    var openedTaskId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var openedGoalId by rememberSaveable { mutableStateOf<Long?>(null) }
+    LaunchedEffect(initialTaskId, tasks, tasksLoaded) {
+        if (initialTaskId == null) openedTaskId = null
+        if (initialTaskId != null && openedTaskId != initialTaskId) {
+            val selected = tasks.firstOrNull { it.id == initialTaskId }
+            if (selected != null) { vm.edit(selected); openedTaskId = initialTaskId; onNavigationConsumed() }
+            else if (tasksLoaded) { openedTaskId = initialTaskId; onNavigationConsumed(); snackbar.showSnackbar("This task is no longer available") }
+        }
+    }
+    LaunchedEffect(initialGoalId, allGoals, goalsLoaded) {
+        if (initialGoalId == null) openedGoalId = null
+        if (initialGoalId != null && openedGoalId != initialGoalId && allGoals.any { it.id == initialGoalId }) {
+            vm.profile(initialGoalId); openedGoalId = initialGoalId; onNavigationConsumed()
+        } else if (initialGoalId != null && openedGoalId != initialGoalId && goalsLoaded) {
+            openedGoalId = initialGoalId; onNavigationConsumed(); snackbar.showSnackbar("This goal is no longer available")
+        }
+    }
+    LaunchedEffect(allGoals, goalsLoaded, filterId) {
+        if (goalsLoaded && filterId != null && allGoals.none { it.id == filterId && !it.archived }) vm.filter(null)
+    }
+    var showTreats by rememberSaveable { mutableStateOf(false) }
+    var showArchivedGoals by rememberSaveable { mutableStateOf(false) }
+    var showTrash by rememberSaveable { mutableStateOf(false) }
+    var spotlightEnabled by remember { mutableStateOf(GoalReminders.enabled(context)) }
+    var spotlightTime by remember { mutableStateOf(false) }
+    var confirmCompletion by remember { mutableStateOf<TodoTask?>(null) }
     val children = tasks.filter { it.parentId != null }.groupBy { it.parentId }
-    val allParents = tasks.filter { it.parentId == null }
-    // When a goal folder is open, show only that goal's tasks.
-    val parents = if (filterGoalId == null) allParents else allParents.filter { it.goalId == filterGoalId }
-    val archivedDone = parents.filter { it.completedAt != null && it.completedAt < startOfToday }
-    val doneToday = parents.filter { (it.completedAt ?: 0) >= startOfToday }
-
-    // Local, drag-mutable copy of the active top-level tasks (reorder source of truth
-    // while dragging; re-derived whenever the DB emits).
-    val activeParents = parents.filter { it.completedAt == null }
-    val ordered: SnapshotStateList<TodoTask> =
-        remember(activeParents.map { it.id }) { activeParents.toMutableStateList() }
-
-    val lazyListState = rememberLazyListState()
-    val reorderState = rememberReorderableLazyListState(lazyListState) { from, to ->
-        val fromId = from.key as? Long ?: return@rememberReorderableLazyListState
-        val toId = to.key as? Long ?: return@rememberReorderableLazyListState
-        val fromIdx = ordered.indexOfFirst { it.id == fromId }
-        val toIdx = ordered.indexOfFirst { it.id == toId }
-        if (fromIdx != -1 && toIdx != -1) {
-            ordered.add(toIdx, ordered.removeAt(fromIdx))
-            haptics.tick()
-        }
+    val goalsById = allGoals.associateBy { it.id }
+    val parentTasks = tasks.filter { it.parentId == null && (filterId == null || it.goalId == filterId) }
+    val activeParents = parentTasks.filter { it.completedAt == null }
+    val activeById = activeParents.associateBy { it.id }
+    var orderedIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var dragging by remember { mutableStateOf(false) }
+    LaunchedEffect(activeParents.map { it.id }) {
+        if (!dragging) orderedIds = activeParents.map { it.id }
     }
-
-    // Every durable write below runs on AppScope, not the composition scope: a tap
-    // followed by a tab switch would otherwise cancel the write mid-flight (that was
-    // the deleted-tasks-came-back bug). UI state stays on `scope`, where cancellation
-    // on leaving the screen is the correct behavior.
-    fun persistOrder() {
-        val snapshot = ordered.toList()
-        AppScope.io.launch {
-            db.todos().updateAll(snapshot.mapIndexed { i, t -> t.copy(sortOrder = i.toLong()) })
-        }
+    val expanded = rememberSaveable { mutableStateOf<List<Long>>(emptyList()) }
+    fun toggleExpanded(id: Long) { expanded.value = if (id in expanded.value) expanded.value - id else expanded.value + id }
+    fun toggle(task: TodoTask, complete: Boolean) {
+        if (complete && children[task.id].orEmpty().any { it.completedAt == null }) confirmCompletion = task
+        else vm.complete(task, complete)
     }
-
-    fun setCompleted(task: TodoTask, complete: Boolean) {
-        AppScope.io.launch {
-            withContext(Dispatchers.IO) {
-                if (complete) {
-                    val end = System.currentTimeMillis()
-                    val timedStart = task.startedAt
-                    // If this task is the running shared timer, tear it down (Focus page +
-                    // notification stop) — we write the block ourselves just below.
-                    if (timedStart != null && TimerController.linkedTaskId(context) == task.id) {
-                        TimerController.clear(context)
-                    }
-                    // Every completed task lands on the calendar: its real timed interval
-                    // when the timer ran long enough, otherwise a short marker ending now.
-                    val start =
-                        if (timedStart != null && end - timedStart >= 60_000L) timedStart
-                        else end - 15 * 60_000L
-                    db.activityBlocks().insert(
-                        ActivityBlock(
-                            title = task.title,
-                            startMillis = start,
-                            endMillis = end,
-                            source = "TODO",
-                            goalId = task.goalId,
-                        )
-                    )
-                    db.todos().update(task.copy(completedAt = end, startedAt = null))
-                    children[task.id]?.filter { it.completedAt == null }?.forEach {
-                        db.todos().update(it.copy(completedAt = end, startedAt = null))
-                    }
-                } else {
-                    db.todos().update(task.copy(completedAt = null))
-                }
+    val listState = rememberLazyListState()
+    val reorder = rememberReorderableLazyListState(listState) { from, to ->
+        val fromId = from.key as? Long
+        val toId = to.key as? Long
+        val old = orderedIds.indexOf(fromId)
+        val next = orderedIds.indexOf(toId)
+        if (old >= 0 && next >= 0) orderedIds = orderedIds.toMutableList().apply { add(next, removeAt(old)) }
+    }
+    val profile = allGoals.firstOrNull { it.id == profileId }
+    BackHandler(enabled = profile != null) { vm.profile(null) }
+    val requestNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    fun askNotifications() {
+        if (TaskReminders.deliveryEnabled(context)) return
+        val globalEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+        if (!globalEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val preferences = context.getSharedPreferences("reminder_permission", android.content.Context.MODE_PRIVATE)
+            val activity = generateSequence(context) { (it as? android.content.ContextWrapper)?.baseContext }.filterIsInstance<android.app.Activity>().firstOrNull()
+            val mayAsk = !preferences.getBoolean("asked", false) || activity?.let { androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.POST_NOTIFICATIONS) } == true
+            if (mayAsk) {
+                preferences.edit().putBoolean("asked", true).apply()
+                requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
             }
         }
+        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
     }
-
-    fun requestDelete(task: TodoTask) = deleteTaskWithUndo(db, task, snackbarHostState)
-
-    fun toggleTimer(task: TodoTask) {
-        // Route through the shared TimerController so a task's timer is the same session the
-        // Focus page shows (and the notification / widget). Start links this task; pause/stop
-        // writes the TODO block and clears its running state — from either screen.
-        if (task.startedAt == null) {
-            haptics.toggleOn()
-            TimerController.startTask(context, task.id, task.title, task.goalId)
-        } else {
-            haptics.toggleOff()
-            TimerController.stopTimer(context)
-        }
-    }
-
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { addSheetParent = null; showAddSheet = true }) {
-                Icon(Icons.Filled.Add, "Add task")
+    Scaffold(snackbarHost = { SnackbarHost(snackbar) }, floatingActionButton = {
+        if (profile == null) FloatingActionButton(onClick = { vm.newTask() }) { Icon(Icons.Default.Add, "Add task") }
+    }) { padding ->
+        if (profile != null) {
+            GoalProfileScreen(profile, onBack = { vm.profile(null) },
+                onEdit = { vm.editGoal(profile) },
+                onTaskEdit = vm::edit, onComplete = ::toggle, onDelete = vm::delete, pending = pending,
+                onTimer = { task -> askNotifications(); vm.timer(task, activeSession?.takeIf { it.taskId == task.id }?.id) },
+                modifier = Modifier.padding(padding))
+        } else LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(bottom = 96.dp)) {
+            item(key = "header") {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tasks", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                    AssistChip(onClick = { showTreats = true }, label = { Text("Treats ${Rewards.format(wallet.available)}") })
+                }
+                Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { vm.editGoal(null) }) { Text("New goal") }
+                    TextButton(onClick = { showArchivedGoals = !showArchivedGoals }) { Text(if (showArchivedGoals) "Active goals" else "Archived goals") }
+                }
+                TextButton(onClick = { showTrash = !showTrash }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("${if (showTrash) "Hide" else "Show"} deleted tasks (${deletedTasks.size})") }
+                val cards = if (showArchivedGoals) allGoals.filter { it.archived } else goals
+                if (cards.isNotEmpty()) LazyRow(contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(cards, key = { it.id }) { goal ->
+                        GoalCard(goal, tasks.filter { it.goalId == goal.id }, onOpen = { vm.profile(goal.id) },
+                            onRestore = if (goal.archived) ({ vm.archiveGoal(goal, false) }) else null)
+                    }
+                }
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item { FilterChip(selected = filterId == null, onClick = { vm.filter(null) }, label = { Text("All tasks") }) }
+                    items(goals, key = { it.id }) { goal -> FilterChip(selected = filterId == goal.id,
+                        onClick = { vm.filter(if (filterId == goal.id) null else goal.id) }, label = { Text(goal.name) }) }
+                }
+                if (filterId != null) Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Showing ${goalsById[filterId]?.name ?: "unavailable goal"}", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { vm.filter(null) }) { Text("Clear filter") }
+                }
+                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Daily goal spotlight", Modifier.weight(1f))
+                    Switch(checked = spotlightEnabled, onCheckedChange = { spotlightEnabled = it; GoalReminders.configure(context, it); if (it) askNotifications() })
+                }
+                if (spotlightEnabled) TextButton(onClick = { spotlightTime = true }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("Spotlight time %02d:%02d".format(java.util.Locale.ROOT, GoalReminders.hour(context), GoalReminders.minute(context))) }
+                if (!TaskReminders.deliveryEnabled(context)) {
+                    TextButton(onClick = ::askNotifications, modifier = Modifier.padding(horizontal = 16.dp)) { Text("Notifications off · Enable reminders") }
+                }
             }
-        },
-    ) { padding ->
-        if (allParents.isEmpty() && goals.isEmpty()) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(32.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    Icons.Filled.Checklist,
-                    contentDescription = null,
-                    modifier = Modifier.size(56.dp),
-                    tint = MaterialTheme.colorScheme.outline,
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "No tasks yet",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "Add one with the + button",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.outline,
-                )
+            if (activeParents.isEmpty()) item(key = "empty") {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (parentTasks.isEmpty()) "No tasks here yet" else "No open tasks", style = MaterialTheme.typography.titleMedium)
+                    Text("Add a task or choose a goal. Completed steps remain available below.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-        } else {
-            LazyColumn(
-                state = lazyListState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentPadding = PaddingValues(bottom = 96.dp),
-            ) {
-                item(key = "goals") {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Tasks",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        AssistChip(
-                            onClick = { showTreats = true },
-                            label = { Text("💰 ${Rewards.format(earnedThisWeek)}") },
-                        )
-                    }
-                    GoalSummaryRow(
-                        goals = goals,
-                        tasks = allParents,
-                        selected = filterGoalId,
-                        onSelect = { filterGoalId = if (filterGoalId == it) null else it },
-                        onNewGoal = { editGoal = null; showGoalEditor = true },
-                        onOpenProfile = { profileGoal = it },
-                    )
+            val activeRows = orderedIds.mapNotNull(activeById::get).flatMap { parent ->
+                listOf(parent) + if (parent.id in expanded.value) children[parent.id].orEmpty() else emptyList()
+            }
+            items(activeRows, key = { it.id }) { task ->
+                val sub = children[task.id].orEmpty()
+                val row: @Composable () -> Unit = {
+                    TaskRow(task, task.id in pending, goalsById[task.goalId]?.color, sub,
+                        expanded = task.id in expanded.value, onExpand = { toggleExpanded(task.id) },
+                        onToggleComplete = { toggle(task, it) }, onEdit = { vm.edit(task) }, onDelete = { vm.delete(task) },
+                        onAddSubtask = if (task.parentId == null && task.completedAt == null) ({ vm.newTask(task) }) else null,
+                        onTimer = {
+                            askNotifications(); vm.timer(task, activeSession?.takeIf { it.taskId == task.id }?.id)
+                        })
                 }
-
-                if (activeParents.isEmpty()) {
-                    item(key = "goal-empty") {
-                        Text(
-                            if (filterGoalId != null) "No open tasks in this goal." else "No open tasks.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.padding(16.dp),
-                        )
+                if (task.parentId == null) ReorderableItem(reorder, key = task.id) { _ ->
+                    SwipeableTaskRow(task, if (task.id !in pending) ({ toggle(task, true) }) else null,
+                        { vm.delete(task) }) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) { row() }
+                            Icon(Icons.Default.DragIndicator, "Reorder task", modifier = Modifier.size(40.dp)
+                                .longPressDraggableHandle(onDragStarted = { dragging = true }, onDragStopped = {
+                                    val live = activeParents.map { it.id }
+                                    orderedIds = orderedIds.filter { it in live } + live.filter { it !in orderedIds }
+                                    vm.reorder(orderedIds); dragging = false
+                                }).padding(8.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else row()
+            }
+            if (showTrash) {
+                item(key = "trash-title") {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Deleted tasks", style = MaterialTheme.typography.titleMedium)
+                        Text("Restore keeps previous completion and reward history. It does not restart a timer.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
-
-                items(ordered, key = { it.id }) { task ->
-                    val subs = children[task.id].orEmpty()
-                    val hasSubs = subs.isNotEmpty()
-                    val isExpanded = task.id in expandedParents
-                    ReorderableItem(reorderState, key = task.id) { isDragging ->
-                        SwipeableTaskRow(
-                            task = task,
-                            onComplete = { haptics.confirm(); setCompleted(task, true) },
-                            onDelete = { haptics.reject(); requestDelete(task) },
-                        ) {
-                            TaskRow(
-                                task = task,
-                                isChild = false,
-                                dragging = isDragging,
-                                now = now,
-                                goalColor = task.goalId?.let { goalsById[it]?.color },
-                                subtaskProgress = if (hasSubs) {
-                                    subs.count { it.completedAt != null } to subs.size
-                                } else null,
-                                onToggleComplete = { done ->
-                                    if (done) haptics.confirm()
-                                    setCompleted(task, done)
-                                },
-                                onToggleTimer = { toggleTimer(task) },
-                                onAddSubtask = { addSheetParent = task; showAddSheet = true },
-                                onEdit = { editTask = task },
-                                onDelete = { haptics.reject(); requestDelete(task) },
-                                dragHandle = {
-                                    Icon(
-                                        Icons.Filled.DragIndicator,
-                                        contentDescription = "Reorder",
-                                        tint = MaterialTheme.colorScheme.outline,
-                                        modifier = Modifier.longPressDraggableHandle(
-                                            onDragStarted = { haptics.longPress() },
-                                            onDragStopped = { persistOrder() },
-                                        ),
-                                    )
-                                },
-                                expanded = isExpanded,
-                                onToggleExpand = if (hasSubs) {
-                                    {
-                                        haptics.tick()
-                                        if (isExpanded) expandedParents.remove(task.id)
-                                        else expandedParents.add(task.id)
-                                    }
-                                } else null,
-                            )
-                        }
-                    }
-                    if (isExpanded) children[task.id]?.filter { it.completedAt == null }?.forEach { sub ->
-                        // subtasks are not reorderable; still swipeable
-                        SwipeableTaskRow(
-                            task = sub,
-                            onComplete = { haptics.confirm(); setCompleted(sub, true) },
-                            onDelete = { haptics.reject(); requestDelete(sub) },
-                        ) {
-                            TaskRow(
-                                task = sub,
-                                isChild = true,
-                                dragging = false,
-                                now = now,
-                                subtaskProgress = null,
-                                onToggleComplete = { done ->
-                                    if (done) haptics.confirm()
-                                    setCompleted(sub, done)
-                                },
-                                onToggleTimer = { toggleTimer(sub) },
-                                onAddSubtask = null,
-                                onEdit = { editTask = sub },
-                                onDelete = { haptics.reject(); requestDelete(sub) },
-                                dragHandle = null,
-                            )
-                        }
-                    }
-                }
-
-                if (doneToday.isNotEmpty()) {
-                    item(key = "done-header") {
-                        Text(
-                            "Done today",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
-                        )
-                    }
-                    items(doneToday, key = { it.id }) { task ->
-                        SwipeableTaskRow(
-                            task = task,
-                            onComplete = null,
-                            onDelete = { haptics.reject(); requestDelete(task) },
-                        ) {
-                            TaskRow(
-                                task = task,
-                                isChild = false,
-                                dragging = false,
-                                now = now,
-                                subtaskProgress = null,
-                                onToggleComplete = { setCompleted(task, false) },
-                                onToggleTimer = null,
-                                onAddSubtask = null,
-                                onEdit = { editTask = task },
-                                onDelete = { haptics.reject(); requestDelete(task) },
-                                dragHandle = null,
-                            )
-                        }
-                    }
-                }
-
-                if (archivedDone.isNotEmpty()) {
-                    item(key = "archive-header") {
-                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { archiveExpanded = !archiveExpanded }) {
-                                Text("Completed (${archivedDone.size})")
-                                Spacer(Modifier.width(4.dp))
-                                Icon(
-                                    if (archiveExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                                    contentDescription = null,
-                                )
-                            }
-                        }
-                    }
-                    if (archiveExpanded) {
-                        items(archivedDone, key = { it.id }) { task ->
-                            TaskRow(
-                                task = task,
-                                isChild = false,
-                                dragging = false,
-                                now = now,
-                                subtaskProgress = null,
-                                onToggleComplete = { setCompleted(task, false) },
-                                onToggleTimer = null,
-                                onAddSubtask = null,
-                                onEdit = { editTask = task },
-                                onDelete = { haptics.reject(); requestDelete(task) },
-                                dragHandle = null,
-                            )
-                        }
+                if (deletedTasks.isEmpty()) item(key = "trash-empty") { Text("No deleted tasks", Modifier.padding(16.dp)) }
+                val deletedIds = deletedTasks.map { it.id }.toSet()
+                val deletedRoots = deletedTasks.filter { task -> task.parentId !in deletedIds || task.deletedBy == null || deletedTasks.firstOrNull { it.id == task.parentId }?.deletedBy != task.deletedBy }
+                items(deletedRoots, key = { "deleted-${it.id}" }) { task ->
+                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) { Text(task.title); Text("Deleted ${task.deletedAt?.let { Instant.ofEpochMilli(it).atZone(AppTime.zone()).toLocalDate() }}", style = MaterialTheme.typography.bodySmall) }
+                        OutlinedButton(enabled = task.id !in pending, onClick = { vm.restoreDeleted(task) }) { Text("Restore") }
                     }
                 }
             }
+            val today = Instant.ofEpochMilli(now).atZone(AppTime.zone()).toLocalDate().atStartOfDay(AppTime.zone()).toInstant().toEpochMilli()
+            val doneToday = parentTasks.filter { (it.completedAt ?: 0) >= today }
+            if (doneToday.isNotEmpty()) item(key = "done-title") { Text("Done today", Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium) }
+            items(doneToday.flatMap { listOf(it) + if (it.id in expanded.value) children[it.id].orEmpty() else emptyList() }, key = { it.id }) { task ->
+                TaskRow(task, task.id in pending, goalsById[task.goalId]?.color, children[task.id].orEmpty(),
+                    expanded = task.id in expanded.value, onExpand = { toggleExpanded(task.id) }, onToggleComplete = { toggle(task, it) },
+                    onEdit = { vm.edit(task) }, onDelete = { vm.delete(task) })
+            }
+            val older = parentTasks.filter { it.completedAt != null && it.completedAt < today }
+            if (older.isNotEmpty()) item(key = "archive") {
+                TextButton(onClick = { vm.archiveVisible(!archiveVisible) }) { Text("${if (archiveVisible) "Hide" else "Show"} completed (${older.size})") }
+            }
+            if (archiveVisible) items(older.flatMap { listOf(it) + if (it.id in expanded.value) children[it.id].orEmpty() else emptyList() }, key = { it.id }) { task ->
+                TaskRow(task, task.id in pending, goalsById[task.goalId]?.color, children[task.id].orEmpty(),
+                    expanded = task.id in expanded.value, onExpand = { toggleExpanded(task.id) }, onToggleComplete = { toggle(task, it) },
+                    onEdit = { vm.edit(task) }, onDelete = { vm.delete(task) })
+            }
         }
     }
-
-    if (showAddSheet) {
-        val parent = addSheetParent
-        AddTaskSheet(
-            parent = parent,
-            goals = goals,
-            // subtasks inherit their parent's goal; new top-level tasks default to the open folder
-            initialGoalId = parent?.goalId ?: filterGoalId,
-            showGoalPicker = parent == null,
-            onDismiss = { showAddSheet = false },
-            onAdd = { title, goalId, rewardCents ->
-                showAddSheet = false
-                haptics.confirm()
-                val parentId = parent?.id
-                val resolvedGoal = parent?.goalId ?: goalId
-                // A goal folder can be open (filtered) when the FAB is used. A new
-                // top-level task that doesn't belong to that goal would silently vanish
-                // under the active filter — it WAS added, just hidden. Clear the filter
-                // so what was just added is immediately visible.
-                if (parentId == null && filterGoalId != null && filterGoalId != resolvedGoal) {
-                    filterGoalId = null
-                }
-                AppScope.io.launch {
-                    val now2 = System.currentTimeMillis()
-                    db.todos().insert(
-                        TodoTask(
-                            title = title,
-                            parentId = parentId,
-                            createdAt = now2,
-                            sortOrder = now2, // new tasks sort to the bottom
-                            goalId = resolvedGoal,
-                            rewardCents = if (parentId == null) rewardCents else 0,
-                        )
-                    )
-                }
-            },
-        )
-    }
-
-    // Full-screen goal profile overlay (tap a goal card). Re-derive the live goal so
-    // edits reflect immediately; close if the goal was deleted.
-    profileGoal?.let { pg ->
-        val live = goals.find { it.id == pg.id }
-        if (live == null) {
-            LaunchedEffect(pg.id) { profileGoal = null }
-        } else {
-            GoalProfileScreen(
-                goal = live,
-                onBack = { profileGoal = null },
-                onEdit = { editGoal = live; showGoalEditor = true },
-            )
-        }
-    }
-
-    if (showTreats) {
-        TreatsSheet(onDismiss = { showTreats = false })
-    }
-
-    if (showGoalEditor) {
-        GoalEditorSheet(
-            goal = editGoal,
-            onDismiss = { showGoalEditor = false },
-            onSave = { name, color, targetDay, details ->
-                showGoalEditor = false
-                haptics.confirm()
-                val existing = editGoal
-                AppScope.io.launch {
-                    if (existing == null) {
-                        db.goals().insert(
-                            Goal(
-                                name = name, color = color, targetDate = targetDay,
-                                createdAt = System.currentTimeMillis(), details = details,
-                            )
-                        )
-                    } else {
-                        db.goals().update(existing.copy(name = name, color = color, targetDate = targetDay, details = details))
-                    }
-                }
-            },
-            onDelete = editGoal?.let { g ->
-                {
-                    showGoalEditor = false
-                    if (filterGoalId == g.id) filterGoalId = null
-                    AppScope.io.launch {
-                        db.todos().clearGoal(g.id)
-                        db.goals().delete(g)
-                    }
-                }
-            },
-        )
-    }
-
-    editTask?.let { task ->
-        var newTitle by remember(task.id) { mutableStateOf(task.title) }
-        AlertDialog(
-            onDismissRequest = { editTask = null },
-            title = { Text("Edit task") },
-            text = {
-                OutlinedTextField(
-                    value = newTitle,
-                    onValueChange = { newTitle = it },
-                    singleLine = true,
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = newTitle.isNotBlank(),
-                    onClick = {
-                        val t = newTitle.trim()
-                        editTask = null
-                        AppScope.io.launch { db.todos().update(task.copy(title = t)) }
-                    },
-                ) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { editTask = null }) { Text("Cancel") }
-            },
-        )
+    confirmCompletion?.let { task -> AlertDialog(onDismissRequest = { confirmCompletion = null },
+        title = { Text("Complete remaining steps?") }, text = { Text("Completing “${task.title}” also completes its remaining steps. Undo reverses this completion's changes.") },
+        confirmButton = { TextButton(onClick = { confirmCompletion = null; vm.complete(task, true) }) { Text("Complete all") } },
+        dismissButton = { TextButton(onClick = { confirmCompletion = null }) { Text("Cancel") } }) }
+    draft?.let { current -> TaskDetailSheet(current, tasks, allGoals, pending = (current.id ?: -1) in pending, error = commandError?.takeIf { it.first == (current.id ?: -1L) }?.second,
+        onChange = vm::changeDraft, onDismiss = { vm.editDraft(null) }, onSave = vm::saveDraft, onNotifications = ::askNotifications) }
+    goalDraft?.let { value -> GoalEditorSheet(value, pending = -3L in pending, error = commandError?.takeIf { it.first == -3L }?.second,
+        onChange = vm::changeGoalDraft, onDismiss = { vm.changeGoalDraft(null) }, onSave = vm::saveGoalDraft,
+        onArchive = { vm.archiveGoal(value.toGoal(), !value.archived) }) }
+    if (showTreats) TreatsSheet { showTreats = false }
+    if (spotlightTime) {
+        val time = rememberTimePickerState(initialHour = GoalReminders.hour(context), initialMinute = GoalReminders.minute(context), is24Hour = true)
+        AlertDialog(onDismissRequest = { spotlightTime = false }, title = { Text("Daily spotlight time") }, text = { TimeInput(time) },
+            confirmButton = { TextButton(onClick = { GoalReminders.configure(context, spotlightEnabled, time.hour, time.minute); spotlightTime = false }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { spotlightTime = false }) { Text("Cancel") } })
     }
 }
 
 @Composable
-internal fun SwipeableTaskRow(
-    task: TodoTask,
-    onComplete: (() -> Unit)?,
-    onDelete: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    val state = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> {
-                    if (onComplete != null) onComplete()
-                    false // snap back; the row moves itself via state change
-                }
-                SwipeToDismissBoxValue.EndToStart -> {
-                    onDelete()
-                    false // snap back; row is filtered out while delete is pending
-                }
-                SwipeToDismissBoxValue.Settled -> false
+internal fun GoalCard(goal: Goal, tasks: List<TodoTask>, onOpen: () -> Unit, onRestore: (() -> Unit)? = null) {
+    val outcomes = tasks.filter { it.parentId == null }
+    val steps = tasks.filter { it.parentId != null }
+    val next = nextGoalAction(tasks)
+    Card(onClick = onOpen, modifier = Modifier.width(220.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(10.dp).clip(CircleShape).background(Color(goal.color)))
+                Text(goal.name, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleSmall)
             }
-        },
-    )
-
-    SwipeToDismissBox(
-        state = state,
-        enableDismissFromStartToEnd = onComplete != null,
-        backgroundContent = {
-            val (color, alignment, icon, tint) = when (state.dismissDirection) {
-                SwipeToDismissBoxValue.StartToEnd -> SwipeBg(
-                    MaterialTheme.colorScheme.primaryContainer, Alignment.CenterStart,
-                    Icons.Filled.Check, MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                else -> SwipeBg(
-                    MaterialTheme.colorScheme.errorContainer, Alignment.CenterEnd,
-                    Icons.Filled.DeleteOutline, MaterialTheme.colorScheme.onErrorContainer,
-                )
-            }
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 8.dp, vertical = 1.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(color)
-                    .padding(horizontal = 24.dp),
-                contentAlignment = alignment,
-            ) {
-                Icon(icon, contentDescription = null, tint = tint)
-            }
-        },
-        content = { content() },
-    )
+            Text("${outcomes.count { it.completedAt != null }}/${outcomes.size} outcomes · ${steps.count { it.completedAt != null }}/${steps.size} steps", style = MaterialTheme.typography.bodySmall)
+            Text(next?.let { "Next: ${it.title}" } ?: if (tasks.isEmpty()) "Add your first step" else "All outcomes completed", style = MaterialTheme.typography.bodySmall)
+            if (onRestore != null) TextButton(onClick = onRestore) { Text("Restore goal") }
+        }
+    }
 }
 
-private data class SwipeBg(
-    val color: Color,
-    val alignment: Alignment,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val tint: Color,
-)
+internal fun nextGoalAction(tasks: List<TodoTask>): TodoTask? {
+    val parent = tasks.filter { it.parentId == null && it.completedAt == null }.minWithOrNull(compareBy<TodoTask> { it.sortOrder }.thenBy { it.id }) ?: return null
+    return tasks.filter { it.parentId == parent.id && it.completedAt == null }.minWithOrNull(compareBy<TodoTask> { it.sortOrder }.thenBy { it.id }) ?: parent
+}
 
 @Composable
-private fun TaskRow(
-    task: TodoTask,
-    isChild: Boolean,
-    dragging: Boolean,
-    now: Long,
-    goalColor: Int? = null,
-    subtaskProgress: Pair<Int, Int>?,
-    onToggleComplete: (Boolean) -> Unit,
-    onToggleTimer: (() -> Unit)?,
-    onAddSubtask: (() -> Unit)?,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    dragHandle: (@Composable () -> Unit)?,
-    expanded: Boolean = false,
-    onToggleExpand: (() -> Unit)? = null,
-) {
-    val completed = task.completedAt != null
-    val running = task.startedAt != null
-    var menuOpen by remember(task.id) { mutableStateOf(false) }
-
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 1.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    dragging -> MaterialTheme.colorScheme.surfaceVariant
-                    running -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                    else -> MaterialTheme.colorScheme.surface
-                }
-            )
-            .padding(start = if (isChild) 24.dp else 0.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (isChild) {
-            Icon(
-                Icons.Filled.SubdirectoryArrowRight,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.outline,
-            )
+internal fun TaskRow(task: TodoTask, pending: Boolean = false, goalColor: Int? = null,
+    children: List<TodoTask> = emptyList(), expanded: Boolean = false, onExpand: () -> Unit = {},
+    onToggleComplete: (Boolean) -> Unit, onEdit: () -> Unit, onDelete: () -> Unit,
+    onAddSubtask: (() -> Unit)? = null, onTimer: (() -> Unit)? = null) {
+    val complete = task.completedAt != null
+    val activeSession by TimerController.state.collectAsStateWithLifecycle()
+    val linkedSession = activeSession?.takeIf { it.taskId == task.id }
+    val running = linkedSession != null
+    // Read a ticking state in this row itself. Passing an unused parent clock lets
+    // Compose skip the row, leaving its elapsed text frozen until another action.
+    val elapsedMillis by produceState(linkedSession?.let(TimerController::elapsedMillis) ?: 0L, linkedSession) {
+        val session = linkedSession ?: run { value = 0L; return@produceState }
+        while (true) { value = TimerController.elapsedMillis(session); delay(1_000) }
+    }
+    var menu by remember(task.id) { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().padding(start = if (task.parentId == null) 8.dp else 30.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (children.isNotEmpty()) IconButton(onClick = onExpand, modifier = Modifier.size(40.dp)) {
+            Icon(if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight, if (expanded) "Collapse steps" else "Expand steps")
         }
-        // Expand/collapse chevron for parents that have subtasks.
-        if (onToggleExpand != null && subtaskProgress != null) {
-            IconButton(onClick = onToggleExpand, modifier = Modifier.size(28.dp)) {
-                Icon(
-                    if (expanded) Icons.Filled.ExpandMore else Icons.Filled.ChevronRight,
-                    contentDescription = if (expanded) "Collapse subtasks" else "Expand subtasks",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(2.dp))
+        Checkbox(checked = complete, enabled = !pending, onCheckedChange = onToggleComplete,
+            modifier = Modifier.semantics { contentDescription = "Complete ${task.title}" })
+        Column(Modifier.weight(1f).clickable(enabled = !pending, onClick = onEdit).padding(4.dp)) {
+            Text(task.title, textDecoration = if (complete) TextDecoration.LineThrough else null,
+                color = if (complete) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+            if (children.isNotEmpty()) Text("${children.count { it.completedAt != null }}/${children.size} steps", style = MaterialTheme.typography.bodySmall)
+            task.dueEpochDay?.let { Text("Due ${LocalDate.ofEpochDay(it)}", style = MaterialTheme.typography.bodySmall) }
+            task.reminderAt?.let { if (!complete) Text("Reminder ${Instant.ofEpochMilli(it).atZone(AppTime.zone()).format(DateTimeFormatter.ofPattern("MMM d HH:mm"))}", style = MaterialTheme.typography.bodySmall) }
+            if (task.rewardCents > 0) Text("Reward ${Rewards.format(task.rewardCents)} · once", style = MaterialTheme.typography.bodySmall)
+            if (running) Text("Timing ${formatDuration(elapsedMillis)}", style = MaterialTheme.typography.bodySmall)
         }
-        Checkbox(checked = completed, onCheckedChange = onToggleComplete)
-        if (goalColor != null) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(Color(goalColor))
-            )
-            Spacer(Modifier.width(8.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(
-                task.title,
-                style = MaterialTheme.typography.bodyLarge,
-                textDecoration = if (completed) TextDecoration.LineThrough else null,
-                color = if (completed) {
-                    MaterialTheme.colorScheme.outline
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-            )
-            when {
-                running -> Text(
-                    "⏱ ${formatDuration(now - task.startedAt!!)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                subtaskProgress != null -> Text(
-                    "${subtaskProgress.first}/${subtaskProgress.second} subtasks",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        if (!completed && onToggleTimer != null) {
-            IconButton(onClick = onToggleTimer) {
-                Icon(
-                    if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                    contentDescription = if (running) "Stop timer" else "Start timer",
-                    tint = if (running) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                )
-            }
-        }
+        if (goalColor != null) Box(Modifier.size(8.dp).clip(CircleShape).background(Color(goalColor)))
+        if (!complete && onTimer != null) IconButton(onClick = onTimer, enabled = !pending) { Icon(if (running) Icons.Default.Stop else Icons.Default.PlayArrow, if (running) "Stop timer" else "Start timer") }
         Box {
-            IconButton(onClick = { menuOpen = true }) {
-                Icon(
-                    Icons.Filled.MoreVert,
-                    contentDescription = "More",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            IconButton(onClick = { menu = true }, enabled = !pending) { Icon(Icons.Default.MoreVert, "Task actions") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("Details") }, onClick = { menu = false; onEdit() })
+                if (onAddSubtask != null) DropdownMenuItem(text = { Text("Add step") }, onClick = { menu = false; onAddSubtask() })
+                DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (onAddSubtask != null && !completed) {
-                    DropdownMenuItem(
-                        text = { Text("Add subtask") },
-                        onClick = { menuOpen = false; onAddSubtask() },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("Edit") },
-                    onClick = { menuOpen = false; onEdit() },
-                )
-                DropdownMenuItem(
-                    text = { Text("Delete") },
-                    onClick = { menuOpen = false; onDelete() },
-                )
-            }
-        }
-        if (dragHandle != null) {
-            dragHandle()
-            Spacer(Modifier.width(4.dp))
         }
     }
 }
 
 @Composable
-private fun AddTaskSheet(
-    parent: TodoTask?,
-    goals: List<Goal>,
-    initialGoalId: Long?,
-    showGoalPicker: Boolean,
-    onDismiss: () -> Unit,
-    onAdd: (String, Long?, Int) -> Unit,
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var title by remember { mutableStateOf("") }
-    var goalId by remember { mutableStateOf(initialGoalId) }
-    var rewardCents by remember { mutableIntStateOf(0) }
-    // Guards against a double-add: the IME "Done" key and a lingering/second tap on the
-    // Add button can both fire for one keystroke sequence, inserting the task twice.
-    var submitted by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
-
-    fun submit() {
-        if (submitted || title.isBlank()) return
-        submitted = true
-        onAdd(title.trim(), goalId, rewardCents)
+internal fun SwipeableTaskRow(task: TodoTask, onComplete: (() -> Unit)?, onDelete: () -> Unit, content: @Composable () -> Unit) {
+    val complete by rememberUpdatedState(onComplete)
+    val delete by rememberUpdatedState(onDelete)
+    key(task.id) {
+        val state = rememberSwipeToDismissBoxState(confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> complete?.invoke()
+                SwipeToDismissBoxValue.EndToStart -> delete()
+                else -> Unit
+            }
+            false
+        })
+        SwipeToDismissBox(state = state, enableDismissFromStartToEnd = onComplete != null, backgroundContent = {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant).padding(20.dp),
+                contentAlignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd) {
+                Text(if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) "Complete" else "Delete")
+            }
+        }, content = { content() })
     }
+}
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                if (parent == null) "New task" else "Subtask of \"${parent.title}\"",
-                style = MaterialTheme.typography.titleLarge,
-            )
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                label = { Text("What needs doing?") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { submit() }),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(focusRequester),
-            )
-            if (showGoalPicker && goals.isNotEmpty()) {
-                Text("Goal", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+@Composable
+private fun TaskDetailSheet(draft: TaskDraft, tasks: List<TodoTask>, goals: List<Goal>, pending: Boolean, error: String?,
+    onChange: (TaskDraft?) -> Unit, onDismiss: () -> Unit, onSave: () -> Unit, onNotifications: () -> Unit) {
+    val context = LocalContext.current
+    var pickDate by rememberSaveable { mutableStateOf<String?>(null) }
+    var reminderDay by rememberSaveable { mutableStateOf<Long?>(null) }
+    var pickTime by rememberSaveable { mutableStateOf(false) }
+    var reminderTimeError by remember { mutableStateOf<String?>(null) }
+    var rewardInput by rememberSaveable(draft.id, draft.parentId) { mutableStateOf(java.math.BigDecimal.valueOf(draft.rewardCents.toLong(), 2).toPlainString()) }
+    val parsedReward = if (rewardInput.trim() in setOf("0", "0.0", "0.00")) 0 else RewardPolicy.parseCents(rewardInput)
+    val validReminder = draft.reminderAt == null || draft.reminderAt > AppTime.nowMillis() || (draft.id != null && "reminder" !in draft.changed)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (draft.id == null) "New ${if (draft.parentId == null) "task" else "step"}" else "Task details", style = MaterialTheme.typography.headlineSmall)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            draft.parentId?.let { parent ->
+                val parentTask = tasks.firstOrNull { it.id == parent }
+                Text("Step of ${parentTask?.title ?: "missing parent"}")
+                if (parentTask?.completedAt != null) Text("Reopen the parent before starting a remaining step timer", style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedTextField(value = draft.title, onValueChange = { onChange(draft.copy(title = it)) }, label = { Text("What needs doing?") }, modifier = Modifier.fillMaxWidth())
+            if (draft.parentId == null) {
+                Text("Goal", style = MaterialTheme.typography.titleSmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = goalId == null,
-                        onClick = { goalId = null },
-                        label = { Text("None") },
-                    )
-                    goals.forEach { g ->
-                        FilterChip(
-                            selected = goalId == g.id,
-                            onClick = { goalId = g.id },
-                            leadingIcon = {
-                                Box(Modifier.size(10.dp).clip(CircleShape).background(Color(g.color)))
-                            },
-                            label = { Text(g.name) },
-                        )
-                    }
+                    FilterChip(selected = draft.goalId == null, onClick = { onChange(draft.copy(goalId = null)) }, label = { Text("Inbox") })
+                    goals.filter { !it.archived || it.id == draft.goalId }.forEach { goal -> FilterChip(selected = draft.goalId == goal.id,
+                        onClick = { onChange(draft.copy(goalId = goal.id)) }, label = { Text(goal.name) }) }
                 }
+            } else Text("This step inherits its parent's goal", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { pickDate = "due" }) { Text(draft.dueEpochDay?.let { "Due ${LocalDate.ofEpochDay(it)}" } ?: "Set due date") }
+                if (draft.dueEpochDay != null) TextButton(onClick = { onChange(draft.copy(dueEpochDay = null)) }) { Text("Clear") }
             }
-            if (parent == null) {
-                Text(
-                    "Worth (treat money when done)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Rewards.REWARD_TIERS.forEach { cents ->
-                        FilterChip(
-                            selected = rewardCents == cents,
-                            onClick = { rewardCents = cents },
-                            label = { Text(if (cents == 0) "—" else Rewards.format(cents)) },
-                        )
-                    }
-                }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { pickDate = "reminder" }) { Text(draft.reminderAt?.let {
+                    Instant.ofEpochMilli(it).atZone(AppTime.zone()).format(DateTimeFormatter.ofPattern("MMM d HH:mm")) } ?: "Set reminder") }
+                if (draft.reminderAt != null) TextButton(onClick = { onChange(draft.copy(reminderAt = null, reminderNote = "")) }) { Text("Cancel reminder") }
             }
-            Button(
-                onClick = { submit() },
-                enabled = title.isNotBlank() && !submitted,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Add") }
+            if (draft.reminderAt != null) {
+                OutlinedTextField(value = draft.reminderNote, onValueChange = { onChange(draft.copy(reminderNote = it)) }, label = { Text("Reminder note (optional)") }, modifier = Modifier.fillMaxWidth())
+                if (!validReminder) Text("Choose a future reminder time", color = MaterialTheme.colorScheme.error)
+                if (!TaskReminders.deliveryEnabled(context)) TextButton(onClick = onNotifications) { Text("Enable notifications to receive this reminder") }
+            }
+            Text("Reward in USD · earned once per task, even after reopening", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(value = rewardInput, onValueChange = { rewardInput = it; val cents = if (it.trim() in setOf("0", "0.0", "0.00")) 0 else RewardPolicy.parseCents(it); if (cents != null) onChange(draft.copy(rewardCents = cents)) },
+                label = { Text("Reward amount (USD)") }, modifier = Modifier.fillMaxWidth(), isError = parsedReward == null || (parsedReward ?: 0) > 1_000_000,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Rewards.REWARD_TIERS.forEach { cents -> FilterChip(selected = draft.rewardCents == cents,
+                    onClick = { rewardInput = java.math.BigDecimal.valueOf(cents.toLong(), 2).toPlainString(); onChange(draft.copy(rewardCents = cents)) }, label = { Text(if (cents == 0) "None" else Rewards.format(cents)) }) }
+            }
+            Button(onClick = onSave, enabled = draft.title.isNotBlank() && validReminder && parsedReward != null && parsedReward <= 1_000_000 && !pending, modifier = Modifier.fillMaxWidth()) { Text(if (pending) "Saving…" else "Save task") }
+            TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
         }
     }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-}
-
-@Composable
-private fun GoalSummaryRow(
-    goals: List<Goal>,
-    tasks: List<TodoTask>,
-    selected: Long?,
-    onSelect: (Long) -> Unit,
-    onNewGoal: () -> Unit,
-    onOpenProfile: (Goal) -> Unit,
-) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        items(goals, key = { it.id }) { g ->
-            val goalTasks = tasks.filter { it.goalId == g.id }
-            val done = goalTasks.count { it.completedAt != null }
-            val next = goalTasks.filter { it.completedAt == null }.minByOrNull { it.sortOrder }
-            val isSel = selected == g.id
-            Column(
-                Modifier
-                    .width(168.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(
-                        if (isSel) Color(g.color).copy(alpha = 0.20f)
-                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                    )
-                    .combinedClickable(
-                        onClick = { onOpenProfile(g) },
-                        onLongClick = { onSelect(g.id) },
-                    )
-                    .padding(12.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(10.dp).clip(CircleShape).background(Color(g.color)))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        g.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    if (goalTasks.isEmpty()) "No tasks yet" else "$done / ${goalTasks.size} done",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    when {
-                        goalTasks.isEmpty() -> "Add one or ask mentor"
-                        next != null -> "Next: ${next.title}"
-                        else -> "All done 🎉"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-        }
-        item(key = "new-goal") {
-            Column(
-                Modifier
-                    .width(120.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
-                    .combinedClickable(onClick = onNewGoal)
-                    .padding(12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(Icons.Filled.Add, "New goal", tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(4.dp))
-                Text("New goal", style = MaterialTheme.typography.labelMedium)
-            }
-        }
+    pickDate?.let { purpose ->
+        val initial = if (purpose == "due") draft.dueEpochDay else draft.reminderAt?.let { Instant.ofEpochMilli(it).atZone(AppTime.zone()).toLocalDate().toEpochDay() }
+        val state = rememberDatePickerState(initialSelectedDateMillis = (initial ?: AppTime.today().toEpochDay()) * 86_400_000L)
+        DatePickerDialog(onDismissRequest = { pickDate = null }, confirmButton = { TextButton(onClick = {
+            state.selectedDateMillis?.let { millis ->
+                val day = millis / 86_400_000L
+                if (purpose == "due") onChange(draft.copy(dueEpochDay = day))
+                else { reminderDay = day; pickTime = true }
+            }; pickDate = null
+        }) { Text("Next") } }, dismissButton = { TextButton(onClick = { pickDate = null }) { Text("Cancel") } }) { DatePicker(state) }
+    }
+    if (pickTime) {
+        val initialTime = draft.reminderAt?.let { Instant.ofEpochMilli(it).atZone(AppTime.zone()).toLocalTime() } ?: Instant.ofEpochMilli(AppTime.nowMillis()).atZone(AppTime.zone()).toLocalTime().plusHours(1)
+        val time = rememberTimePickerState(initialHour = initialTime.hour, initialMinute = initialTime.minute, is24Hour = true)
+        AlertDialog(onDismissRequest = { pickTime = false }, title = { Text("Reminder time") }, text = { Column { TimeInput(time); reminderTimeError?.let { Text(it, color = MaterialTheme.colorScheme.error) } } },
+            confirmButton = { TextButton(onClick = {
+                val day = LocalDate.ofEpochDay(reminderDay ?: AppTime.today().toEpochDay())
+                val local = LocalDateTime.of(day, LocalTime.of(time.hour, time.minute))
+                if (AppTime.zone().rules.getValidOffsets(local).isEmpty()) { reminderTimeError = "This local time does not exist because the clock changes. Choose another time."; return@TextButton }
+                val at = local.atZone(AppTime.zone()).toInstant().toEpochMilli()
+                reminderTimeError = null
+                onChange(draft.copy(reminderAt = at)); pickTime = false; onNotifications()
+            }) { Text("Set reminder") } }, dismissButton = { TextButton(onClick = { pickTime = false }) { Text("Cancel") } })
     }
 }
 
-private val GOAL_COLORS = listOf(
-    0xFF5B9DFF, 0xFF4FC28C, 0xFFF4A63C, 0xFFEC407A, 0xFFB08CFF,
-    0xFF26C6A6, 0xFFEF6C00, 0xFF8D6E63, 0xFF3FC6D8, 0xFFE53935,
-).map { it.toInt() }
+private val GOAL_COLORS = listOf(0xFF2962FF, 0xFF00875A, 0xFFC45B00, 0xFFB5215B, 0xFF7443B4).map { it.toInt() }
 
 @Composable
-private fun GoalEditorSheet(
-    goal: Goal?,
-    onDismiss: () -> Unit,
-    onSave: (String, Int, Long?, String?) -> Unit,
-    onDelete: (() -> Unit)?,
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var name by remember { mutableStateOf(goal?.name ?: "") }
-    var details by remember { mutableStateOf(goal?.details ?: "") }
-    var color by remember { mutableStateOf(goal?.color ?: GOAL_COLORS.first()) }
-    var targetDay by remember { mutableStateOf(goal?.targetDate) }
-    var pickDate by remember { mutableStateOf(false) }
-
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(if (goal == null) "New goal" else "Edit goal", style = MaterialTheme.typography.titleLarge)
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Goal name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = details,
-                onValueChange = { details = it },
-                label = { Text("Why it matters / details") },
-                minLines = 2,
-                maxLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text("Color", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                GOAL_COLORS.forEach { c ->
-                    Box(
-                        Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(Color(c))
-                            .then(
-                                if (c == color) Modifier.padding(0.dp) else Modifier
-                            )
-                            .combinedClickable(onClick = { color = c }),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (c == color) Icon(Icons.Filled.Check, null, tint = Color.White)
-                    }
-                }
+private fun GoalEditorSheet(draft: GoalDraft, pending: Boolean, error: String?, onChange: (GoalDraft?) -> Unit, onDismiss: () -> Unit, onSave: () -> Unit, onArchive: () -> Unit) {
+    var pickDate by rememberSaveable { mutableStateOf(false) }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (draft.id == null) "New goal" else "Edit goal", style = MaterialTheme.typography.headlineSmall)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            OutlinedTextField(draft.name, { onChange(draft.copy(name = it)) }, label = { Text("Goal name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(draft.details, { onChange(draft.copy(details = it)) }, label = { Text("Why it matters") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { GOAL_COLORS.forEachIndexed { index, candidate ->
+                FilterChip(selected = draft.color == candidate, onClick = { onChange(draft.copy(color = candidate)) }, label = { Text("Color ${index + 1}") },
+                    leadingIcon = { Box(Modifier.size(14.dp).clip(CircleShape).background(Color(candidate))) })
+            } }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { pickDate = true }) { Text(draft.targetDate?.let { "Target ${LocalDate.ofEpochDay(it)}" } ?: "Set target date") }
+                if (draft.targetDate != null) TextButton(onClick = { onChange(draft.copy(targetDate = null)) }) { Text("Clear") }
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(
-                    onClick = { pickDate = true },
-                    label = {
-                        Text(
-                            targetDay?.let { "Target: " + LocalDate.ofEpochDay(it).format(java.time.format.DateTimeFormatter.ofPattern("MMM d")) }
-                                ?: "Set target date"
-                        )
-                    },
-                )
-                if (targetDay != null) {
-                    TextButton(onClick = { targetDay = null }) { Text("Clear") }
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (onDelete != null) {
-                    OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
-                        Text("Delete", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-                Button(
-                    onClick = { onSave(name.trim(), color, targetDay, details.trim().ifBlank { null }) },
-                    enabled = name.isNotBlank(),
-                    modifier = Modifier.weight(1f),
-                ) { Text("Save") }
-            }
+            Button(enabled = draft.name.isNotBlank() && !pending, onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text(if (pending) "Saving…" else "Save goal") }
+            if (draft.id != null) OutlinedButton(enabled = !pending, onClick = onArchive, modifier = Modifier.fillMaxWidth()) { Text(if (draft.archived) "Restore goal" else "Archive goal") }
+            Text("Archiving preserves tasks and history. Restore it from Archived goals.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     }
-
     if (pickDate) {
-        val dpState = rememberDatePickerState(
-            initialSelectedDateMillis = (targetDay ?: LocalDate.now().toEpochDay()) * 86_400_000L
-        )
-        DatePickerDialog(
-            onDismissRequest = { pickDate = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    dpState.selectedDateMillis?.let { targetDay = it / 86_400_000L }
-                    pickDate = false
-                }) { Text("OK") }
-            },
-            dismissButton = { TextButton(onClick = { pickDate = false }) { Text("Cancel") } },
-        ) { DatePicker(state = dpState) }
+        val state = rememberDatePickerState(initialSelectedDateMillis = (draft.targetDate ?: AppTime.today().toEpochDay()) * 86_400_000L)
+        DatePickerDialog(onDismissRequest = { pickDate = false }, confirmButton = { TextButton(onClick = { state.selectedDateMillis?.let { onChange(draft.copy(targetDate = it / 86_400_000L)) }; pickDate = false }) { Text("Set date") } }) { DatePicker(state) }
     }
 }

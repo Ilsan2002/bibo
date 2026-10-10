@@ -7,249 +7,160 @@ import android.content.Context
 import android.content.Intent
 import android.os.Process
 import android.provider.Settings
+import androidx.room.withTransaction
+import java.time.LocalDate
+import java.time.ZoneId
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-data class UsageSession(
-    val packageName: String,
-    val label: String,
-    val start: Long,
-    val end: Long,
-    val color: Int,
+data class UsageSession(val packageName: String, val label: String, val start: Long, val end: Long, val color: Int, val id: Long = 0)
+data class AppUsageTotal(val packageName: String, val label: String, val totalMillis: Long, val color: Int)
+data class UsageRefreshResult(val collectedAt: Long?, val error: String? = null, val permitted: Boolean = true)
+data class UsageSnapshot(
+    val days: List<LocalDate>, val totals: List<AppUsageTotal>, val selectedDayMillis: Long,
+    val dailyMillis: List<Long>, val hourly: Array<LongArray>, val coverage: List<UsageCoverageState>, val collectedAt: Long?,
+    val zone: ZoneId,
 )
 
-data class AppUsageTotal(
-    val packageName: String,
-    val label: String,
-    val totalMillis: Long,
-    val color: Int,
-)
-
-/**
- * Reads per-app foreground sessions from UsageStatsManager and caches them into Room.
- *
- * The system prunes detailed usage events after a few days, so every read first
- * ingests the last 48h of correctly-reconstructed sessions into Room, then serves
- * the requested window from Room — giving both fresh data and durable history.
- */
-class UsageRepo(private val context: Context) {
-
-    private val db by lazy { BiboDb.get(context) }
-
+/** One coalesced collector; readers remain available when collection is disabled. */
+class UsageRepo(context: Context) {
+    private val context = context.applicationContext
+    private val db get() = BiboDb.get(context)
     private val palette = intArrayOf(
         0xFFE53935.toInt(), 0xFFD81B60.toInt(), 0xFF8E24AA.toInt(), 0xFF5E35B1.toInt(),
         0xFF3949AB.toInt(), 0xFF1E88E5.toInt(), 0xFF039BE5.toInt(), 0xFF00ACC1.toInt(),
         0xFF00897B.toInt(), 0xFF43A047.toInt(), 0xFF7CB342.toInt(), 0xFFC0CA33.toInt(),
         0xFFFFB300.toInt(), 0xFFFB8C00.toInt(), 0xFFF4511E.toInt(), 0xFF6D4C41.toInt(),
     )
-
-    private val excludedPackages = setOf(
-        context.packageName,
-        "com.sec.android.app.launcher",
-        "com.google.android.apps.nexuslauncher",
-        "com.android.systemui",
-        "com.samsung.android.app.aodservice",
-    )
-
+    private val excludedPackages = setOf(context.packageName, "com.sec.android.app.launcher",
+        "com.google.android.apps.nexuslauncher", "com.android.systemui", "com.samsung.android.app.aodservice")
     private val labelCache = HashMap<String, String?>()
-
     fun hasPermission(): Boolean {
-        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val mode = appOps.unsafeCheckOpNoThrow(
-            AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName
-        )
-        return mode == AppOpsManager.MODE_ALLOWED
+        val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        return ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName) == AppOpsManager.MODE_ALLOWED
     }
-
-    fun openUsageAccessSettings() {
-        context.startActivity(
-            Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+    fun openUsageAccessSettings() { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    fun colorFor(packageName: String): Int = palette[Math.floorMod(packageName.hashCode(), palette.size)]
+    private fun labelFor(packageName: String): String? = labelCache.getOrPut(packageName) {
+        if (packageName in excludedPackages) return@getOrPut null
+        runCatching { context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(packageName, 0)).toString() }.getOrDefault(packageName)
     }
-
-    fun colorFor(packageName: String): Int =
-        palette[Math.floorMod(packageName.hashCode(), palette.size)]
-
-    /** Launchable-app label, or null if the package shouldn't be shown. */
-    private fun labelFor(packageName: String): String? =
-        labelCache.getOrPut(packageName) {
-            if (packageName in excludedPackages) return@getOrPut null
-            val pm = context.packageManager
-            if (pm.getLaunchIntentForPackage(packageName) == null) return@getOrPut null
-            runCatching {
-                pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
-            }.getOrNull()
-        }
-
-    /**
-     * Per-app foreground intervals within [start, end), reconstructed with the
-     * correctness fixes available through the public API: sessions end on the first
-     * of PAUSED/STOPPED, and every open session is hard-closed when the screen turns
-     * off / keyguard shows / the device shuts down (otherwise a lost close event
-     * leaves a multi-hour ghost session). Keyed by package — the per-activity
-     * instanceId that would separate split-screen instances is a hidden API.
-     */
-    private fun rawSessions(start: Long, end: Long): List<Triple<String, Long, Long>> {
-        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val events = usm.queryEvents(start, end)
-        val open = HashMap<String, Long>() // packageName -> start ts
-        val raw = mutableListOf<Triple<String, Long, Long>>()
+    private data class Collection(val firstEvent: Long?, val sessions: List<UsageSessionEntity>)
+    private fun collect(start: Long, end: Long): Collection {
+        val events = (context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager).queryEvents(start, end)
+        val open = mutableMapOf<Pair<String, String>, Long>()
+        val raw = mutableListOf<UsageSessionEntity>()
         val event = UsageEvents.Event()
-
-        fun closeAll(ts: Long) {
-            if (open.isEmpty()) return
-            open.forEach { (pkg, s) -> if (ts > s) raw.add(Triple(pkg, s, ts)) }
-            open.clear()
+        var first: Long? = null
+        fun finish(key: Pair<String, String>, at: Long) {
+            val began = open.remove(key) ?: return
+            val label = labelFor(key.first) ?: return
+            if (at > began) raw += UsageSessionEntity(packageName = key.first, label = label, startMillis = began, endMillis = at)
         }
-
+        fun finishAll(at: Long) { open.keys.toList().forEach { finish(it, at) } }
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
+            if (first == null) first = event.timeStamp
+            val pkg = event.packageName.orEmpty()
+            val key = pkg to event.className.orEmpty()
             when (event.eventType) {
-                UsageEvents.Event.ACTIVITY_RESUMED ->
-                    open.putIfAbsent(event.packageName, event.timeStamp)
-                UsageEvents.Event.ACTIVITY_PAUSED,
-                UsageEvents.Event.ACTIVITY_STOPPED -> {
-                    val s = open.remove(event.packageName) ?: continue
-                    if (event.timeStamp > s) raw.add(Triple(event.packageName, s, event.timeStamp))
+                UsageEvents.Event.ACTIVITY_RESUMED -> if (labelFor(pkg) != null) open.putIfAbsent(key, event.timeStamp)
+                UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> finish(key, event.timeStamp)
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE, UsageEvents.Event.KEYGUARD_SHOWN, UsageEvents.Event.DEVICE_SHUTDOWN -> finishAll(event.timeStamp)
+            }
+        }
+        finishAll(end)
+        val accurate = raw.groupBy { it.packageName }.flatMap { (pkg, sessions) ->
+            UsageAggregation.union(sessions.map { UsageInterval(it.startMillis, it.endMillis) }, start, end).map {
+                UsageSessionEntity(packageName = pkg, label = sessions.first().label, startMillis = it.start, endMillis = it.end)
+            }
+        }
+        return Collection(first, accurate)
+    }
+    suspend fun refresh(force: Boolean = false): UsageRefreshResult {
+        if (!hasPermission()) return UsageRefreshResult(lastSuccessfulAt.takeIf { it > 0 }, permitted = false)
+        val job = refreshLock.withLock {
+            inFlight?.takeIf { it.isActive } ?: AppScope.io.async {
+                val now = AppTime.nowMillis()
+                if (!force && now >= lastSuccessfulAt && now - lastSuccessfulAt < THROTTLE_MS) UsageRefreshResult(lastSuccessfulAt)
+                else {
+                    try { ingest(now); lastSuccessfulAt = now; UsageRefreshResult(now) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) { UsageRefreshResult(lastSuccessfulAt.takeIf { it > 0 }, error = error.message ?: "Usage refresh failed") }
                 }
-                UsageEvents.Event.SCREEN_NON_INTERACTIVE,
-                UsageEvents.Event.KEYGUARD_SHOWN,
-                UsageEvents.Event.DEVICE_SHUTDOWN ->
-                    closeAll(event.timeStamp)
-            }
+            }.also { inFlight = it }
         }
-        // Close whatever is still foreground at query end (the current app), with a
-        // generous backstop against a genuinely-lost close event.
-        val closeAt = minOf(end, System.currentTimeMillis())
-        val maxOpen = 6 * 3600_000L
-        open.forEach { (pkg, s) ->
-            val e = minOf(closeAt, s + maxOpen)
-            if (e > s) raw.add(Triple(pkg, s, e))
-        }
-        return raw
+        return job.await()
+    }
+    private suspend fun ingest(now: Long) {
+        // Backfill available retained events; absence of events is not proof of historical zero use.
+        val queryFrom = now - BACKFILL_MS
+        val collected = collect(queryFrom, now)
+        persistUsageCollection(db, collected.firstEvent, now, collected.sessions, RETENTION_MS)
     }
 
-    /** Per-app intervals: raw per-instance sessions collapsed per package so
-     *  split-screen overlaps and rapid re-focus don't double-count. */
-    private fun mergedPerApp(start: Long, end: Long, mergeGapMillis: Long = 30_000L):
-        List<UsageSessionEntity> {
-        val byApp = rawSessions(start, end).groupBy { it.first }
-        val out = mutableListOf<UsageSessionEntity>()
-        for ((pkg, sessions) in byApp) {
-            val label = labelFor(pkg) ?: continue
-            val sorted = sessions.map { it.second to it.third }.sortedBy { it.first }
-            var curStart = sorted.first().first
-            var curEnd = sorted.first().second
-            for (i in 1 until sorted.size) {
-                val (s, e) = sorted[i]
-                if (s - curEnd <= mergeGapMillis) {
-                    if (e > curEnd) curEnd = e
-                } else {
-                    out.add(UsageSessionEntity(packageName = pkg, label = label, startMillis = curStart, endMillis = curEnd))
-                    curStart = s; curEnd = e
-                }
-            }
-            out.add(UsageSessionEntity(packageName = pkg, label = label, startMillis = curStart, endMillis = curEnd))
-        }
-        return out
-    }
-
-    /** Recompute the last 48h of sessions and refresh them in Room (throttled). */
-    private suspend fun ingest() {
-        val now = System.currentTimeMillis()
-        synchronized(throttleLock) {
-            if (now - lastIngest < INGEST_THROTTLE_MS) return
-            lastIngest = now
-        }
-        val windowStart = now - 48 * 3600_000L
-        val merged = mergedPerApp(windowStart, now)
-        db.usage().pruneBefore(now - RETENTION_MS)
-        // Replace the recomputed window wholesale so stale fragments don't linger.
-        db.usage().deleteFrom(windowStart)
-        if (merged.isNotEmpty()) db.usage().upsertAll(merged)
-    }
-
-    /**
-     * Foreground sessions for the calendar timeline: merged same-app sessions with
-     * small gaps, short ones dropped so the timeline isn't cluttered.
-     */
-    suspend fun querySessions(
-        start: Long,
-        end: Long,
-        minDurationMillis: Long = 3 * 60_000L,
-    ): List<UsageSession> {
-        if (!hasPermission()) return emptyList()
-        ingest()
-        return db.usage().sessionsIn(start, end).mapNotNull { e ->
-            val s = maxOf(e.startMillis, start)
-            val en = minOf(e.endMillis, end)
-            if (en - s < minDurationMillis) return@mapNotNull null
-            UsageSession(e.packageName, e.label, s, en, colorFor(e.packageName))
-        }
-    }
-
-    /** Total foreground millis for each of [days] (for the weekly trend chart). */
-    suspend fun dailyTotals(days: List<java.time.LocalDate>, zone: java.time.ZoneId): List<Long> {
-        if (days.isEmpty() || !hasPermission()) return List(days.size) { 0L }
-        ingest()
-        val rangeStart = days.first().atStartOfDay(zone).toInstant().toEpochMilli()
-        val rangeEnd = days.last().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        val sessions = db.usage().sessionsIn(rangeStart, rangeEnd)
-        return days.map { day ->
-            val ds = day.atStartOfDay(zone).toInstant().toEpochMilli()
-            val de = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-            sessions.sumOf { s ->
-                val a = maxOf(s.startMillis, ds)
-                val b = minOf(s.endMillis, de)
-                if (b > a) b - a else 0L
+    fun observeSnapshot(days: List<LocalDate>, zone: ZoneId): Flow<UsageSnapshot> {
+        require(days.isNotEmpty())
+        return db.invalidationTracker.createFlow("usage_sessions", "usage_coverage", emitInitialState = true).map {
+            db.withTransaction {
+                val start = AppTime.window(days.first(), zone).startMillis
+                val end = AppTime.window(days.last(), zone).endMillis
+                snapshot(days, zone, db.usage().sessionsIn(start, end), db.usageCoverage().allOnce())
             }
         }
     }
-
-    /** [days.size][24] matrix of foreground millis per (day, hour) for the heatmap. */
-    suspend fun hourlyMatrix(
-        days: List<java.time.LocalDate>,
-        zone: java.time.ZoneId,
-    ): Array<LongArray> {
-        val matrix = Array(days.size) { LongArray(24) }
-        if (days.isEmpty() || !hasPermission()) return matrix
-        ingest()
-        val rangeStart = days.first().atStartOfDay(zone).toInstant().toEpochMilli()
-        val rangeEnd = days.last().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        val sessions = db.usage().sessionsIn(rangeStart, rangeEnd)
-        for ((dayIdx, day) in days.withIndex()) {
-            for (hour in 0 until 24) {
-                val hs = day.atTime(hour, 0).atZone(zone).toInstant().toEpochMilli()
-                val he = hs + 3600_000L
-                matrix[dayIdx][hour] = sessions.sumOf { s ->
-                    val a = maxOf(s.startMillis, hs)
-                    val b = minOf(s.endMillis, he)
-                    if (b > a) b - a else 0L
-                }
-            }
-        }
-        return matrix
+    private fun snapshot(days: List<LocalDate>, zone: ZoneId, rows: List<UsageSessionEntity>, known: List<UsageCoverage>): UsageSnapshot {
+        val intervals = rows.map { UsageInterval(it.startMillis, it.endMillis) }
+        val coverageIntervals = known.map { UsageInterval(it.startMillis, it.endMillis) }
+        val daily = days.map { val w = AppTime.window(it, zone); UsageAggregation.unionMillis(intervals, w.startMillis, w.endMillis) }
+        val selected = AppTime.window(days.last(), zone)
+        val totals = rows.groupBy { it.packageName }.mapNotNull { (pkg, sessions) ->
+            val total = UsageAggregation.unionMillis(sessions.map { UsageInterval(it.startMillis, it.endMillis) }, selected.startMillis, selected.endMillis)
+            if (total == 0L) null else AppUsageTotal(pkg, sessions.first().label, total, colorFor(pkg))
+        }.sortedWith(compareByDescending<AppUsageTotal> { it.totalMillis }.thenBy { it.packageName })
+        return UsageSnapshot(days, totals, daily.last(), daily, days.map { UsageAggregation.hourlyMillis(intervals, it, zone) }.toTypedArray(),
+            days.map { val w = AppTime.window(it, zone); UsageAggregation.coverage(coverageIntervals, w.startMillis, minOf(w.endMillis, AppTime.nowMillis())) }, known.maxOfOrNull { it.collectedAt }, zone)
     }
-
-    /** Per-app total foreground time in [start, end), for the stats page. */
     suspend fun queryTotals(start: Long, end: Long): List<AppUsageTotal> {
-        if (!hasPermission()) return emptyList()
-        ingest()
-        return db.usage().sessionsIn(start, end)
-            .groupBy { it.packageName }
-            .mapNotNull { (pkg, sessions) ->
-                val total = sessions.sumOf {
-                    minOf(it.endMillis, end) - maxOf(it.startMillis, start)
-                }
-                if (total < 60_000L) return@mapNotNull null
-                AppUsageTotal(pkg, sessions.first().label, total, colorFor(pkg))
-            }
-            .sortedByDescending { it.totalMillis }
+        refresh()
+        return db.usage().sessionsIn(start, end).groupBy { it.packageName }.mapNotNull { (pkg, rows) ->
+            val total = UsageAggregation.unionMillis(rows.map { UsageInterval(it.startMillis, it.endMillis) }, start, end)
+            if (total == 0L) null else AppUsageTotal(pkg, rows.first().label, total, colorFor(pkg))
+        }.sortedByDescending { it.totalMillis }
     }
-
+    suspend fun dailyTotals(days: List<LocalDate>, zone: ZoneId): List<Long> {
+        if (days.isEmpty()) return emptyList()
+        refresh()
+        val intervals = db.usage().sessionsIn(AppTime.window(days.first(), zone).startMillis, AppTime.window(days.last(), zone).endMillis).map { UsageInterval(it.startMillis, it.endMillis) }
+        return days.map { val w = AppTime.window(it, zone); UsageAggregation.unionMillis(intervals, w.startMillis, w.endMillis) }
+    }
+    suspend fun hourlyMatrix(days: List<LocalDate>, zone: ZoneId): Array<LongArray> {
+        if (days.isEmpty()) return emptyArray()
+        refresh()
+        val intervals = db.usage().sessionsIn(AppTime.window(days.first(), zone).startMillis, AppTime.window(days.last(), zone).endMillis).map { UsageInterval(it.startMillis, it.endMillis) }
+        return days.map { UsageAggregation.hourlyMillis(intervals, it, zone) }.toTypedArray()
+    }
+    fun observeSessions(start: Long, end: Long, minDurationMillis: Long = 3 * 60_000L): Flow<List<UsageSession>> =
+        db.usage().sessionsInFlow(start, end).map { displaySessions(it, start, end, minDurationMillis) }
+    suspend fun querySessions(start: Long, end: Long, minDurationMillis: Long = 3 * 60_000L): List<UsageSession> {
+        refresh()
+        return displaySessions(db.usage().sessionsIn(start, end), start, end, minDurationMillis)
+    }
+    private fun displaySessions(rows: List<UsageSessionEntity>, start: Long, end: Long, minimum: Long): List<UsageSession> = rows.mapNotNull { row ->
+        val a = maxOf(start, row.startMillis); val b = minOf(end, row.endMillis)
+        if (b - a < minimum) null else UsageSession(row.packageName, row.label, a, b, colorFor(row.packageName), row.id)
+    }
     companion object {
-        private const val INGEST_THROTTLE_MS = 30_000L
+        private const val THROTTLE_MS = 30_000L
+        private const val BACKFILL_MS = 7 * 24 * 3600_000L
         private const val RETENTION_MS = 400L * 24 * 3600_000L
-        private val throttleLock = Any()
-        @Volatile private var lastIngest = 0L
+        private val refreshLock = Mutex()
+        private var inFlight: Deferred<UsageRefreshResult>? = null
+        @Volatile private var lastSuccessfulAt = 0L
     }
 }

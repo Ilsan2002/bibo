@@ -3,6 +3,7 @@ package de.tobiasschuerg.weekview.compose
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -10,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
@@ -42,8 +44,10 @@ fun WeekViewCompose(
     initialScrollTime: LocalTime? = null,
     bottomContentPadding: Dp = 0.dp,
 ) {
-    var localScalingFactor by remember { mutableFloatStateOf(weekViewConfig.scalingFactor) }
-    val activeWeekConfig = weekViewConfig.copy(scalingFactor = localScalingFactor)
+    var zoomAnchorY by remember { mutableFloatStateOf(0f) }
+    val activeWeekConfig = weekViewConfig
+    val currentConfig by rememberUpdatedState(weekViewConfig)
+    val currentActions by rememberUpdatedState(actions)
 
     Box(
         modifier =
@@ -57,14 +61,14 @@ fun WeekViewCompose(
                                 val zoom = event.calculateZoom()
                                 if (zoom != 1f) {
                                     val newScalingFactor =
-                                        (localScalingFactor * zoom)
+                                        (currentConfig.scalingFactor * zoom)
                                             .coerceIn(
-                                                activeWeekConfig.minScalingFactor,
-                                                activeWeekConfig.maxScalingFactor,
+                                                currentConfig.minScalingFactor,
+                                                currentConfig.maxScalingFactor,
                                             )
-                                    if (newScalingFactor != localScalingFactor) {
-                                        localScalingFactor = newScalingFactor
-                                        actions.onScalingFactorChange?.invoke(newScalingFactor)
+                                    if (newScalingFactor != currentConfig.scalingFactor) {
+                                        zoomAnchorY = event.calculateCentroid().y
+                                        currentActions.onScalingFactorChange?.invoke(newScalingFactor)
                                     }
                                     event.changes.forEach { it.consume() }
                                 }
@@ -91,6 +95,7 @@ fun WeekViewCompose(
             style = style,
             initialScrollTime = initialScrollTime,
             bottomContentPadding = bottomContentPadding,
+            zoomAnchorY = zoomAnchorY,
         )
     }
 }

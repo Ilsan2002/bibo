@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- User history can be backed up; secrets and transient system ownership cannot. -->
+    <exclude domain="file" path="backup-recovery/" />
+        <exclude domain="sharedpref" path="mentor_credentials.xml" />
+    <exclude domain="sharedpref" path="mentor.xml" />
+    <exclude domain="sharedpref" path="bibo_timer.xml" />
+    <exclude domain="sharedpref" path="bibo_dnd_owner.xml" />
+</full-backup-content>

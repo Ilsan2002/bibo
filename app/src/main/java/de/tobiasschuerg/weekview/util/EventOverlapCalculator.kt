@@ -29,14 +29,14 @@ object EventOverlapCalculator {
      * @param events List of events to calculate layouts for
      * @return Map from event ID to layout information
      */
-    fun calculateEventLayouts(events: List<Event.Single>): Map<Long, EventLayout> {
+    fun calculateEventLayouts(events: List<Event.Single>, scalingFactor: Float = 1f): Map<Long, EventLayout> {
         val layoutMap = mutableMapOf<Long, EventLayout>()
 
         // Group events by date for separate overlap calculation per day
         val eventsByDate = events.groupBy { it.date }
 
         eventsByDate.forEach { (_, dayEvents) ->
-            calculateOverlapsForDay(dayEvents, layoutMap)
+            calculateOverlapsForDay(dayEvents, layoutMap, scalingFactor)
         }
 
         return layoutMap
@@ -48,6 +48,7 @@ object EventOverlapCalculator {
     private fun calculateOverlapsForDay(
         dayEvents: List<Event.Single>,
         layoutMap: MutableMap<Long, EventLayout>,
+        scalingFactor: Float,
     ) {
         // Sort events by start time for consistent processing
         val sortedEvents = dayEvents.sortedBy { it.timeSpan.start }
@@ -59,7 +60,7 @@ object EventOverlapCalculator {
         val adjacency = Array(eventCount) { mutableListOf<Int>() }
         for (i in 0 until eventCount) {
             for (j in i + 1 until eventCount) {
-                if (eventsOverlap(sortedEvents[i], sortedEvents[j])) {
+                if (eventsOverlap(sortedEvents[i], sortedEvents[j], scalingFactor)) {
                     adjacency[i].add(j)
                     adjacency[j].add(i)
                 }
@@ -125,14 +126,15 @@ object EventOverlapCalculator {
     private fun eventsOverlap(
         event1: Event.Single,
         event2: Event.Single,
+        scalingFactor: Float,
     ): Boolean {
         // If different dates, no overlap possible
         if (event1.date != event2.date) return false
 
-        val event1Start = event1.timeSpan.start
-        val event1End = event1.timeSpan.endExclusive
-        val event2Start = event2.timeSpan.start
-        val event2End = event2.timeSpan.endExclusive
+        val event1Start = event1.timeSpan.startSecond
+        val event1End = if (event1.isPoint) minOf(86400.0, event1Start + 32 * 60 / scalingFactor) else event1.timeSpan.endSecondExclusive
+        val event2Start = event2.timeSpan.startSecond
+        val event2End = if (event2.isPoint) minOf(86400.0, event2Start + 32 * 60 / scalingFactor) else event2.timeSpan.endSecondExclusive
 
         // Check if event2 starts within event1's timespan
         val event2StartsWithinEvent1 = event2Start >= event1Start && event2Start < event1End

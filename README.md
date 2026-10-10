@@ -1,125 +1,52 @@
 # Bibo
 
-A personal productivity app for Android — calendar, screen-time stats, activity timer,
-voice logging, and a to-do list, all backed by local storage. Built for one user, sideloaded
-(no Play Store).
+Bibo is a local-first Android app for planning, tasks, focus sessions, daily logs, and screen-time history. Mentor is an optional cloud assistant. The app is intended for sideloading.
 
-## Features
+## Everyday workflows
 
-- **Calendar** — Google-Calendar-style day / 3-day timeline. Shows:
-  - Real events from the phone's Google Calendar (read + write via `CalendarContract`).
-  - Colored app-usage blocks (which app, when, how long), rendered translucent.
-  - Manually added events (＋ button) and voice logs.
-  - Tap any block → detail sheet with **Edit time** (Material date/time pickers, updates
-    Google Calendar or the local block), Open, and Delete.
-  - Hold-to-talk mic: speak "played tennis from 5 to 7" → parsed into a time block by
-    **Gemini Nano** on-device (falls back to ML Kit Entity Extraction, then regex).
-  - Swipe between days, tap a date chip to jump, pinch-zoom the timeline.
-- **Stats** — per-app screen time for any day + a **7-day trend chart** and an
-  **hour-by-day usage heatmap**. Optional **per-website time** (via an accessibility
-  service that reads the browser address bar; toggle it on from the Websites card).
-- **Timer** — name an activity, start/stop; runs as a **foreground service** with an
-  ongoing notification (live elapsed time + Stop). Recent-activity chips, today's history.
-- **Tasks** — subtasks, per-task timer, **swipe to complete / delete with undo**,
-  **drag-to-reorder**, done-today + collapsible completed archive. Completed/timed tasks
-  land on the calendar.
-- **Focus Mode** (Timer tab) — set an intention, link a goal, pick apps to **block**
-  (accessibility overlay bounces you back), optional **Pomodoro** cycles and **auto-DND**;
-  ends with a reflection note saved to the calendar block.
-- **Daily** — voice-log what you ate (Gemini Nano estimates calories / sugar / caffeine),
-  tick daily habits (shower, clean clothes, workout, prayer), weekly dot strip, and an
-  AI **day review** card.
-- **Goals** — long-term goals as colored folders of tasks; progress summary cards,
-  colored dots on the calendar's date strip, and a daily goal-spotlight notification.
-- **Mentor** — a Claude-powered coach (Anthropic API, key stays on-device) that sees your
-  goals, focus sessions, habits, intake, calendar, and screen time. Continuous across days
-  via layered memory: raw chat (2 days) + model-written per-day digests + an evolving
-  memory-notes document rewritten at each day rollover. **It can act**, not just talk —
-  create tasks (auto-broken into the smallest first steps and filed under the right goal),
-  create goals, add calendar events, and set goal-framed reminders — via Claude tool use.
-  It also **checks in on its own** each evening (9:30pm) grounded in the day's data.
-- **Goal profiles** — tap a goal to see its "why," a progress bar, target countdown, next
-  step, and every task/subtask with tap-to-complete.
-- **Two-pane on the Fold** — unfolded, the Calendar and Tasks tabs show both side by side.
-- **Homescreen widget** (Jetpack Glance) — today's agenda + one-tap timer start.
-- **Quick Settings tile** — toggle the activity timer from the shade.
-- **Polish** — semantic haptics throughout, themed splash screen, adaptive navigation
-  (bottom bar folded → nav rail unfolded).
+- **Calendar:** local plans and device-calendar events have explicit destinations. View actual sessions, completion milestones, usage, and plans with separate source controls or an accessible agenda. Editors retain full start/end dates, all-day dates, time zones, and drafts. Recurring events and exceptions open the calendar app for changes.
+- **Tasks and goals:** create goals and tasks locally, add steps, edit due dates/reminders/rewards, reorder, archive goals, and recover deleted tasks. Completing a parent explains remaining-step completion. Undo reverses only its own action. Untimed completion is a milestone; it does not invent work time.
+- **Focus:** one active session, shared across task rows, the Focus screen, notifications, widget, tile, and Mentor. Stop saves work immediately; reflection attaches to that ended session. Pomodoro breaks are recorded separately. App blocking and Do Not Disturb show actual readiness and remain optional.
+- **Daily:** review editable activity/meal drafts before saving. Nutrition supports explicit manual values and labelled local estimates. Habits distinguish done, skipped, and not logged. Choose applicable habits and optional personal targets. Date changes and log edits invalidate pending recaps.
+- **Stats:** saved history remains readable without collection access. Headlines and charts use clipped interval unions, local-day boundaries, and coverage indicators. Website sampling is a separate opt-in from app blocking; it can be paused and its history deleted.
+- **Mentor:** connect an OpenRouter key, select shared categories, and choose automatic check-ins/quiet hours. Current requests use GLM through OpenRouter. Requests can incur API charges. Durable turns show pending, failure, cancellation, and applied actions. Local changes use the same commands as the UI; retries retain identity. Memory has version history and user corrections.
+- **Settings and recovery:** inspect capability status, manage optional features, and export or inspect/restore a verified local archive through Android's document picker. Exported files contain private history and are not encrypted by Bibo. API keys and permission grants are excluded. Backup maintenance ends active work and requires reopening the app.
 
-## Tech
+## Data and permissions
 
-- Kotlin + Jetpack Compose + Material 3
-- Room (local database) — all data stays on the device
-- Calendar timeline: [tobiasschuerg/android-week-view](https://github.com/tobiasschuerg/android-week-view)
-  (MIT), **vendored** into `app/src/main/java/de/tobiasschuerg/weekview/` and patched:
-  compact hour labels, auto-scroll to now, adaptive event-block text, hairline grid,
-  optional day header, bottom content padding. Don't re-add the JitPack dependency —
-  it would clash with the vendored classes.
-- On-device `SpeechRecognizer` for speech-to-text; **ML Kit GenAI (Gemini Nano)** +
-  **ML Kit Entity Extraction** for parsing phrases into events (all on-device, no keys)
-- Charts hand-rolled in Compose (Vico is also a declared dependency for future use)
-- **Jetpack Glance** widget, **Quick Settings** `TileService`, **AccessibilityService**
-  for per-website time, foreground `TimerService`, `sh.calvin.reorderable` for task drag
-- **Anthropic Java SDK** (`com.anthropic:anthropic-java`) for the Mentor chat —
-  `claude-opus-4-8`, adaptive thinking; needs `packaging { resources { excludes } }`
-  for its Apache-jar `META-INF` files on Android
-- Data layer: Room `bibo.db` (v11) — activity_blocks, todo_tasks, usage_sessions,
-  website_sessions, habit_days, food_entries, goals, chat_messages, chat_days;
-  migrations preserve data across upgrades
+Room database version 13 stores sessions, segments, task completion events, immutable reward entries, health logs, coverage, command receipts, chat, and memory revisions. Additive migrations preserve existing records. Legacy TODO durations remain ambiguous and are excluded from measured work. Old false habit values become unknown; reward history starts from a labelled legacy snapshot. Invalid legacy task relationships are repaired without deleting tasks, and original links are retained in an upgrade report.
 
-## UX notes
+Rewards use USD cents, a local Monday-to-Monday budget, no carryover, and one credit per task for its lifetime. Reopening, editing, or removing a task does not rewrite money already earned or spent.
 
-- Calendar: swipe between days (HorizontalPager), tap a date chip to jump, tap any block
-  for details/delete, pinch to zoom the timeline. Usage blocks render translucent to
-  stand apart from planned events.
-- Known quirk: the Desktop folder is iCloud-synced, which occasionally drops
-  " 2"/" 3"-suffixed duplicate files into `app/build/intermediates` and breaks resource
-  parsing. Fix: `rm -rf app/build/intermediates/packaged_res` and rebuild.
+| Access | Purpose |
+|---|---|
+| Calendar read/write | Read device events and save to a selected writable calendar |
+| Usage Access | Collect app usage; saved history remains readable when disabled |
+| Microphone | Voice input; typing/manual entry is always available |
+| Notifications | Task/goal reminders and running-session controls |
+| Accessibility | Optional supported-browser website sampling and focus app blocking |
+| Overlay | Optional blocking overlay; blocking can fall back to Home |
+| Do Not Disturb | Optional focus silencing with session ownership |
+| Internet | Explicit Mentor requests, enabled automatic Mentor work, or an explicitly chosen speech provider |
 
-## Permissions
+Voice uses an available on-device recognizer by default. A network recognizer requires separate opt-in. Activity and food parsing use deterministic bounded local draft parsers; unsupported input requires correction or manual entry. User-triggered day recaps can use an already available Gemini Nano model; they never download a model and fall back to recorded facts.
 
-| Permission | Why | How it's granted |
-|-----------|-----|------------------|
-| Calendar (read/write) | show + save Google Calendar events | normal runtime prompt |
-| Usage Access | per-app screen time | manual toggle in Settings (app opens the screen for you) |
-| Microphone | voice logging | normal runtime prompt |
-| Notifications | running-timer notification | normal runtime prompt (Start timer) |
-| Accessibility | per-website time + focus-mode app blocking | manual toggle in Settings (Stats → Websites → Enable) |
-| Display over other apps | focus-mode blocking overlay | prompt from Focus setup |
-| Do Not Disturb access | auto-DND during focus sessions | prompt from Focus setup |
-| Internet | Mentor chat (Claude API) — the only network feature | install-time, automatic |
+Mentor keys are encrypted with Android Keystore-backed AES-GCM and excluded from data backup/transfer. Messages, selected records, and memory are sent to OpenRouter and its model provider when Mentor is used. Disconnect cancels outstanding transport and automatic work. Website recording starts disabled.
 
-On Android 13+, sideloaded apps hit **"Restricted settings"** when granting Usage Access
-or Accessibility — if the toggle is greyed out, open *App info → ⋮ → Allow restricted
-settings* first. Samsung **Auto Blocker** (Settings → Security and privacy) must be off to
-sideload/USB-debug.
+Android can restrict sensitive settings for sideloaded apps. If a required toggle is unavailable, check App info → Allow restricted settings on the device. Available recognizers, browsers, calendar accounts, and OEM background policies vary; Settings reports capability state.
 
-## Build & install
+## Build and verify
 
-Requires Android Studio's SDK (already at `~/Library/Android/sdk`) and JDK 17.
+Use JDK 17 and Android SDK 36. Set `ANDROID_HOME` or supply your own untracked `local.properties`.
 
 ```sh
-# build a debug APK
-./gradlew assembleDebug
-
-# install on a USB-connected phone (USB debugging on)
-~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The Gradle wrapper is pinned to 8.14.3 (Homebrew's Gradle 9.x is too new for the Android plugin).
+The wrapper pins Gradle 8.14.3. CI builds, runs lint/unit tests, and runs Room/workflow tests on an API 36 emulator. Exported Room schemas are in `app/schemas`. Migration tests use the released generated v12 SQL schema and representative v2–v11 fixtures; historical user databases were not available.
 
-## Ideas / next steps
+The calendar component is the MIT-licensed [android-week-view](https://github.com/tobiasschuerg/android-week-view), vendored under `de/tobiasschuerg/weekview`. Its local modifications cover stable event identity, midnight and DST rendering, overlap, gestures, and scroll bounds. Do not add a second dependency containing the same classes.
 
-- **Timeline drag-to-move / create / resize** — deferred. Edit-time via the detail sheet
-  covers move/resize reliably; a drag gesture on the vendored timeline needs hands-on
-  testing (it writes to the real Google Calendar) and is the natural next feature.
-- Room DB export/import (JSON via kotlinx.serialization + Storage Access Framework) +
-  WAL-safe backup (checkpoint before copying the `.db`).
-- Editing **recurring** Google events: currently refused (a naive DTSTART+DTEND write
-  would break their sync) — needs the `CONTENT_EXCEPTION_URI` single-instance path.
-- Event colors on write via `EVENT_COLOR_KEY` (from the account's `Colors` palette).
-- App-category grouping in Stats; weekly/monthly aggregates.
-- M3 Expressive theming once material3 1.5.0 ships stable.
-- Fold two-pane (ListDetailPaneScaffold) for Tasks on the unfolded screen.
-
-See [docs/RESEARCH.md](docs/RESEARCH.md) for the full framework study behind these.
+See [the implementation report](docs/IMPLEMENTATION.md) for decisions, regression coverage, and device validation limits.

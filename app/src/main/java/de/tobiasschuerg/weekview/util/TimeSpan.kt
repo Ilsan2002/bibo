@@ -2,59 +2,33 @@ package de.tobiasschuerg.weekview.util
 
 import java.time.Duration
 import java.time.LocalTime
+import kotlin.math.roundToLong
 
-/**
- * Holds a duration of time.
- */
+/** Wall-clock coordinates inside one day; the exclusive numeric boundary can represent 24:00. */
 data class TimeSpan(
     val start: LocalTime,
     val endExclusive: LocalTime,
+    val endSecondExclusive: Double = endExclusive.toNanoOfDay() / 1e9,
 ) {
+    val startSecond: Double get() = start.toNanoOfDay() / 1e9
     init {
-        require(start.isBefore(endExclusive)) {
-            "Start time $start must be before end time $endExclusive!"
+        require(startSecond >= 0 && endSecondExclusive <= 86400.0 && startSecond < endSecondExclusive) {
+            "A day segment must have positive duration within [00:00, 24:00]."
         }
     }
-
-    val duration: Duration by lazy { Duration.between(start, endExclusive) }
-
-    /**
-     * Returns a sequence of hourly time labels within this time span.
-     * Each time is normalized to the hour boundary (minute = 0).
-     *
-     * Example: TimeSpan from 08:30 to 12:15 would return [08:00, 09:00, 10:00, 11:00, 12:00]
-     */
-    fun hourlyTimes(): Sequence<LocalTime> =
-        sequence {
-            var currentHour = start.hour
-            val endHour = endExclusive.hour
-
-            // Always yield the starting hour
-            yield(LocalTime.of(currentHour, 0))
-
-            // Generate subsequent hours until we reach the end
-            // Use <= to include the hour containing the end time
-            while (currentHour < endHour) {
-                currentHour++
-                if (currentHour <= endHour) {
-                    yield(LocalTime.of(currentHour, 0))
-                }
-            }
-        }
-
+    val duration: Duration get() = Duration.ofNanos(((endSecondExclusive - startSecond) * 1e9).roundToLong())
+    fun hourlyTimes(): Sequence<LocalTime> = ((startSecond / 3600).toInt()..minOf(23, (endSecondExclusive / 3600).toInt())).asSequence().map { LocalTime.of(it, 0) }
+    val endLabel: String get() = if (endSecondExclusive == 86400.0) "24:00" else endExclusive.toString()
     companion object {
-        fun of(
-            start: LocalTime,
-            duration: Duration,
-        ): TimeSpan {
-            require(!duration.isNegative && !duration.isZero) {
-                "Duration must be positive, but was $duration"
-            }
-            val end = start.plus(duration)
-            require(end.isAfter(start)) {
-                "TimeSpan starting at $start with duration $duration would cross midnight, which is not supported"
-            }
-            return TimeSpan(start, end)
+        fun fromSeconds(startSecond: Double, endSecondExclusive: Double): TimeSpan {
+            require(startSecond.isFinite() && endSecondExclusive.isFinite() && startSecond >= 0 && startSecond < endSecondExclusive && endSecondExclusive <= 86400.0)
+            val start = LocalTime.ofNanoOfDay((startSecond * 1e9).roundToLong().coerceIn(0, 86_399_999_999_999))
+            val end = if (endSecondExclusive == 86400.0) LocalTime.MAX else LocalTime.ofNanoOfDay((endSecondExclusive * 1e9).roundToLong().coerceIn(0, 86_399_999_999_999))
+            return TimeSpan(start, end, endSecondExclusive)
+        }
+        fun of(start: LocalTime, duration: Duration): TimeSpan {
+            require(!duration.isNegative && !duration.isZero)
+            return fromSeconds(start.toNanoOfDay() / 1e9, start.toNanoOfDay() / 1e9 + duration.toNanos() / 1e9)
         }
     }
 }

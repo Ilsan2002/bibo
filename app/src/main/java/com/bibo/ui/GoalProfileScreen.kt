@@ -1,270 +1,68 @@
 package com.bibo.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.SubdirectoryArrowRight
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.bibo.data.AppScope
-import com.bibo.data.BiboDb
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.bibo.data.AppTime
 import com.bibo.data.Goal
 import com.bibo.data.TodoTask
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import java.time.Instant
+import java.time.ZoneId
 
-/**
- * Full-screen "profile" for one goal: the why (details), overall progress, the target
- * countdown, the next step, and every task + subtask under it with tap-to-complete.
- */
+/** Reads the same task tree and invokes the same commands as the inbox. */
 @Composable
-fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit) {
-    val context = LocalContext.current
-    val db = remember { BiboDb.get(context) }
-    val accent = Color(goal.color)
-    val snackbarHostState = remember { SnackbarHostState() }
-    val haptics = rememberHaptics()
-
-    val tasks by db.todos().forGoal(goal.id).collectAsStateWithLifecycle(emptyList())
+fun GoalProfileScreen(goal: Goal, onBack: () -> Unit, onEdit: () -> Unit,
+    onTaskEdit: (TodoTask) -> Unit, onComplete: (TodoTask, Boolean) -> Unit,
+    onDelete: (TodoTask) -> Unit, onTimer: (TodoTask) -> Unit, modifier: Modifier = Modifier, pending: Set<Long> = emptySet()) {
+    val vm: TaskViewModel = viewModel()
+    val allTasks by vm.tasks.collectAsStateWithLifecycle()
+    val tasks = allTasks.filter { it.goalId == goal.id }
     val parents = tasks.filter { it.parentId == null }
-    val childrenOf = tasks.filter { it.parentId != null }.groupBy { it.parentId }
-
-    val done = tasks.count { it.completedAt != null }
-    val total = tasks.size
-    val nextTask = parents.filter { it.completedAt == null }.minByOrNull { it.sortOrder }
-
-    fun toggle(task: TodoTask) {
-        // Durable write on a scope that outlives this screen (see AppScope).
-        AppScope.io.launch {
-            val complete = task.completedAt == null
-            val now = System.currentTimeMillis()
-            db.todos().update(task.copy(completedAt = if (complete) now else null, startedAt = null))
-            if (complete && task.parentId == null) {
-                childrenOf[task.id]?.filter { it.completedAt == null }
-                    ?.forEach { db.todos().update(it.copy(completedAt = now, startedAt = null)) }
+    val children = tasks.filter { it.parentId != null }.groupBy { it.parentId }
+    val outcomesDone = parents.count { it.completedAt != null }
+    val steps = tasks.filter { it.parentId != null }
+    val next = nextGoalAction(tasks)
+    var now by remember { mutableLongStateOf(AppTime.nowMillis()) }
+    LaunchedEffect(Unit) { while (true) { now = AppTime.nowMillis(); delay(1_000) } }
+    BackHandler(onBack = onBack)
+    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(8.dp)) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to tasks") }
+                Text(goal.name, Modifier.weight(1f).padding(12.dp), style = MaterialTheme.typography.headlineSmall)
+                IconButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Edit goal") }
+            }
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (goal.archived) Text("Archived · tasks and history are preserved")
+                goal.details?.let { Text(it) }
+                Text("$outcomesDone/${parents.size} outcomes · ${steps.count { it.completedAt != null }}/${steps.size} steps")
+                LinearProgressIndicator(progress = { if (parents.isEmpty()) 0f else outcomesDone.toFloat() / parents.size }, modifier = Modifier.fillMaxWidth())
+                goal.targetDate?.let { day ->
+                    val today = Instant.ofEpochMilli(now).atZone(AppTime.zone()).toLocalDate().toEpochDay()
+                    Text("Target ${java.time.LocalDate.ofEpochDay(day)} · ${when { day > today -> "${day - today} days left"; day == today -> "today"; else -> "${today - day} days ago" }}")
+                }
+                Text(next?.let { "Next step: ${it.title}" } ?: if (parents.isEmpty()) "Add a first step" else "All outcomes completed", style = MaterialTheme.typography.titleMedium)
+                if (!goal.archived) OutlinedButton(onClick = { vm.filter(goal.id); vm.newTask() }) { Icon(Icons.Default.Add, null); Text("Add task") }
             }
         }
-    }
-
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) { padding ->
-        LazyColumn(
-            Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(bottom = 32.dp),
-        ) {
-            item {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(start = 4.dp, end = 8.dp, top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                    Box(
-                        Modifier
-                            .size(14.dp)
-                            .clip(CircleShape)
-                            .background(accent)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        goal.name,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = onEdit) {
-                        Icon(Icons.Filled.Edit, contentDescription = "Edit goal")
-                    }
-                }
-            }
-
-            item {
-                Column(
-                    Modifier.padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (!goal.details.isNullOrBlank()) {
-                        Text(
-                            goal.details!!,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    val pct = if (total > 0) done.toFloat() / total else 0f
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row {
-                            Text(
-                                "$done of $total done",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                "${(pct * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = accent,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                        LinearProgressIndicator(
-                            progress = { pct },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp)),
-                            color = accent,
-                            trackColor = accent.copy(alpha = 0.15f),
-                        )
-                    }
-
-                    goal.targetDate?.let { td ->
-                        val left = td - LocalDate.now().toEpochDay()
-                        val dateStr = LocalDate.ofEpochDay(td).format(DateTimeFormatter.ofPattern("MMM d, yyyy"))
-                        Text(
-                            when {
-                                left > 0 -> "🎯 Target $dateStr — $left day${if (left == 1L) "" else "s"} left"
-                                left == 0L -> "🎯 Target is today ($dateStr)"
-                                else -> "🎯 Target was $dateStr (${-left} day${if (left == -1L) "" else "s"} ago)"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    if (nextTask != null) {
-                        Surface(
-                            color = accent.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.padding(12.dp)) {
-                                Text(
-                                    "NEXT STEP",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = accent,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                Text(nextTask.title, style = MaterialTheme.typography.bodyLarge)
-                            }
-                        }
-                    }
-
-                    Text(
-                        "Tasks",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
-            }
-
-            if (parents.isEmpty()) {
-                item {
-                    Text(
-                        "No tasks under this goal yet. Ask your mentor to break it down, or add one from the Tasks tab.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-                }
-            }
-
-            // Swipe left to delete, same gesture as the Tasks tab. Tapping a row already
-            // toggles completion, so swipe-to-complete is left off here.
-            items(parents, key = { it.id }) { parent ->
-                SwipeableTaskRow(
-                    task = parent,
-                    onComplete = null,
-                    onDelete = { haptics.reject(); deleteTaskWithUndo(db, parent, snackbarHostState) },
-                ) {
-                    GoalTaskRow(parent, isChild = false, onToggle = { toggle(parent) })
-                }
-                childrenOf[parent.id].orEmpty().forEach { sub ->
-                    SwipeableTaskRow(
-                        task = sub,
-                        onComplete = null,
-                        onDelete = { haptics.reject(); deleteTaskWithUndo(db, sub, snackbarHostState) },
-                    ) {
-                        GoalTaskRow(sub, isChild = true, onToggle = { toggle(sub) })
-                    }
-                }
-            }
+        if (parents.isEmpty()) item { Text("No tasks in this goal", Modifier.padding(20.dp)) }
+        items(parents.flatMap { listOf(it) + children[it.id].orEmpty() }, key = { it.id }) { task ->
+            TaskRow(task, task.id in pending, goal.color, children[task.id].orEmpty(), expanded = true,
+                onToggleComplete = { onComplete(task, it) }, onEdit = { onTaskEdit(task) }, onDelete = { onDelete(task) },
+                onTimer = if (task.completedAt == null && (task.parentId == null || parents.firstOrNull { it.id == task.parentId }?.completedAt == null)) ({ onTimer(task) }) else null,
+                onAddSubtask = if (task.parentId == null && task.completedAt == null && !goal.archived) ({ vm.newTask(task) }) else null)
         }
-    }
-}
-
-@Composable
-private fun GoalTaskRow(task: TodoTask, isChild: Boolean, onToggle: () -> Unit) {
-    val completed = task.completedAt != null
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable { onToggle() }
-            .padding(start = if (isChild) 36.dp else 20.dp, end = 20.dp, top = 2.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (isChild) {
-            Icon(
-                Icons.Filled.SubdirectoryArrowRight,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.outline,
-            )
-        }
-        Checkbox(checked = completed, onCheckedChange = { onToggle() })
-        Text(
-            task.title,
-            style = if (isChild) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
-            textDecoration = if (completed) TextDecoration.LineThrough else null,
-            color = if (completed) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
-        )
     }
 }

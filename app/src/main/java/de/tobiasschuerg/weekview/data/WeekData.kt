@@ -17,12 +17,13 @@ class WeekData(
     private val multiDayEvents: MutableList<Event.MultiDay> = mutableListOf()
     private var earliestStart: LocalTime = start
     private var latestEnd: LocalTime = end
+    private var latestEndSecond = end.toNanoOfDay() / 1e9
 
     fun getTimeSpan(): TimeSpan? {
         val start = earliestStart
         val end = latestEnd
         if (!start.isBefore(end)) return null
-        return TimeSpan(start, end)
+        return TimeSpan(start, end, latestEndSecond)
     }
 
     fun add(item: Event.AllDay) {
@@ -59,7 +60,8 @@ class WeekData(
         }
 
         // Update latest end if this event ends later
-        if (eventEnd.isAfter(latestEnd)) {
+        if (event.timeSpan.endSecondExclusive > latestEndSecond) {
+            latestEndSecond = event.timeSpan.endSecondExclusive
             latestEnd = eventEnd
         }
     }
@@ -78,5 +80,6 @@ class WeekData(
         multiDayEvents.clear()
         earliestStart = start
         latestEnd = end
+        latestEndSecond = end.toNanoOfDay() / 1e9
     }
 }

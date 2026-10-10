@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Mentor chat calls OpenRouter; everything else stays on-device. -->
+    <!-- Mentor cloud requests and an explicitly chosen speech provider need network. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
 
@@ -15,15 +15,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Exact alarms so the hourly mentor check-ins actually fire on time (a reminder
-         app's core function; auto-granted, no runtime prompt on a sideloaded build). -->
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <!-- Android 11+ package visibility: without this, getLaunchIntentForPackage /
          getApplicationLabel silently fail for other installed apps (e.g. Facebook),
          so their usage never shows in stats. -->
     <queries>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -33,7 +36,10 @@
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.Bibo">
+        android:theme="@style/Theme.Bibo"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules">
 
         <activity
             android:name=".MainActivity"
@@ -46,27 +52,16 @@
             </intent-filter>
         </activity>
 
-        <receiver
-            android:name=".data.GoalReminderReceiver"
-            android:exported="true">
+        <!-- Internal alarms cannot be invoked by other apps. -->
+        <receiver android:name=".data.GoalReminderReceiver" android:exported="false" />
+        <receiver android:name=".data.MentorCheckinReceiver" android:exported="false" />
+        <receiver android:name=".data.TaskReminderReceiver" android:exported="false" />
+        <receiver android:name=".data.TimerPhaseReceiver" android:exported="false" />
+        <receiver android:name=".data.RecoveryReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".data.MentorCheckinReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".data.TaskReminderReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
             </intent-filter>
         </receiver>
 

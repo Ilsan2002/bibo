@@ -1,540 +1,353 @@
 @file:OptIn(ExperimentalMaterial3Api::class)
-
 package com.bibo.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Checkroom
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.FitnessCenter
-import androidx.compose.material.icons.filled.Restaurant
-import androidx.compose.material.icons.filled.SelfImprovement
-import androidx.compose.material.icons.filled.Shower
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.bibo.data.AppScope
-import com.bibo.data.BiboDb
-import com.bibo.data.FoodEntry
-import com.bibo.data.HabitDay
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.bibo.data.*
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
-import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.withContext
 
-private val CAL = Color(0xFFEF6C00)
-private val SUGAR = Color(0xFFEC407A)
-private val CAFFEINE = Color(0xFF8D6E63)
-private val dateFmt = DateTimeFormatter.ofPattern("EEE, MMM d")
-
-private enum class Habit { SHOWER, CLOTHES, WORKOUT, PRAY }
+private val dateFmt = DateTimeFormatter.ofPattern("EEE, MMM d, yyyy")
+private data class NutritionEditor(val food: FoodItem, val day: Long, val entry: FoodEntry? = null, val draftIndex: Int? = null)
 
 @Composable
 fun HealthScreen() {
     val context = LocalContext.current
     val db = remember { BiboDb.get(context) }
-    val scope = rememberCoroutineScope()
+    val model: HealthViewModel = viewModel(factory = remember { HealthViewModel.Factory(context.applicationContext) })
+    val operation by model.state.collectAsState()
     val haptics = rememberHaptics()
-    val parser = remember { HealthParser(context) }
+    val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-
-    var epochDay by rememberSaveable { mutableLongStateOf(LocalDate.now().toEpochDay()) }
+    var epochDay by rememberSaveable { mutableLongStateOf(AppTime.today().toEpochDay()) }
+    val liveDay by AppTime.days.collectAsState(initial = DayContext(AppTime.today(), AppTime.zone()))
+    var previousToday by rememberSaveable { mutableLongStateOf(AppTime.today().toEpochDay()) }
+    LaunchedEffect(liveDay) {
+        if (epochDay == previousToday) epochDay = liveDay.date.toEpochDay()
+        previousToday = liveDay.date.toEpochDay()
+    }
     val date = LocalDate.ofEpochDay(epochDay)
-    val isToday = epochDay == LocalDate.now().toEpochDay()
-
-    val habitFlow = remember(epochDay) { db.habits().forDay(epochDay) }
-    val habitDay by habitFlow.collectAsState(initial = null)
-    val habit = habitDay ?: HabitDay(epochDay)
-
-    val foodFlow = remember(epochDay) { db.foods().forDay(epochDay) }
-    val foods by foodFlow.collectAsState(initial = emptyList())
-    val calories = foods.sumOf { it.calories }
-    val sugar = foods.sumOf { it.sugarG }
-    val caffeine = foods.sumOf { it.caffeineMg }
-
-    val week = remember(epochDay) { (6 downTo 0).map { date.minusDays(it.toLong()) } }
-    val weekFlow = remember(epochDay) {
-        db.habits().range(week.first().toEpochDay(), week.last().toEpochDay())
-    }
-    val weekHabits by weekFlow.collectAsState(initial = emptyList())
-    val weekByDay = weekHabits.associateBy { it.epochDay }
-
-    var showAdd by remember { mutableStateOf(false) }
-    val dayReview = remember { DayReview(context) }
+    val settingsStore = remember { HealthPreferenceStore(context) }
+    var preferences by remember { mutableStateOf(settingsStore.read()) }
+    var showPreferences by remember { mutableStateOf(false) }
+    var loadRevision by remember { mutableIntStateOf(0) }
+    var addingDay by rememberSaveable { mutableStateOf<Long?>(null) }
+    var nutritionEditor by remember { mutableStateOf<NutritionEditor?>(null) }
+    val reviewer = remember { DayReview(context) }
+    var reviewRequest by remember(epochDay) { mutableIntStateOf(0) }
+    var handledReviewRequest by remember(epochDay) { mutableIntStateOf(0) }
+    var reviewCancellation by remember(epochDay) { mutableIntStateOf(0) }
+    var voiceTargetDay by remember { mutableLongStateOf(epochDay) }
+    var voiceReferenceDay by remember { mutableLongStateOf(AppTime.today().toEpochDay()) }
     var review by remember(epochDay) { mutableStateOf<String?>(null) }
-    var reviewing by remember { mutableStateOf(false) }
+    var reviewError by remember(epochDay) { mutableStateOf<String?>(null) }
+    var reviewing by remember(epochDay) { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { if (reviewing) reviewCancellation++ }
 
-    fun toggle(which: Habit) {
-        haptics.toggleOn()
-        val next = when (which) {
-            Habit.SHOWER -> habit.copy(showered = !habit.showered)
-            Habit.CLOTHES -> habit.copy(cleanClothes = !habit.cleanClothes)
-            Habit.WORKOUT -> habit.copy(workedOut = !habit.workedOut)
-            Habit.PRAY -> habit.copy(prayed = !habit.prayed)
-        }
-        AppScope.io.launch { db.habits().upsert(next) }
+    LaunchedEffect(operation.message, operation.error) {
+        val notice = operation.error ?: operation.message
+        if (notice != null) { snackbar.showSnackbar(notice); model.clearNotice() }
     }
-
-    fun logText(text: String) {
-        scope.launch {
-            val log = withContext(Dispatchers.IO) { parser.parse(text) }
-            if (log.isEmpty) {
-                haptics.reject()
-                snackbar.showSnackbar("Didn't catch any food or habit")
-                return@launch
+    // Keying the entire daily content prevents retained Room emissions from another date.
+    key(epochDay) {
+        val daily by remember(epochDay, liveDay.zone, loadRevision) { model.observeDay(epochDay, liveDay.zone) }.collectAsState(initial = HealthDayState(epochDay))
+        val habit = daily.habit
+        val foods = daily.foods
+        val blocks = daily.blocks
+        val todayHabit = habit ?: HabitDay(epochDay)
+        // Date-keyed job is canceled on navigation and invalidated by factual edits.
+        LaunchedEffect(epochDay, reviewRequest, reviewCancellation, habit, foods, blocks, liveDay.zone, daily.loaded) {
+            review = null; reviewError = null; reviewing = false
+            if (reviewRequest > handledReviewRequest && daily.loaded) {
+                handledReviewRequest = reviewRequest
+                reviewing = true
+                val reviewDay = epochDay
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        val before = reviewer.revision(reviewDay)
+                        val narrative = reviewer.generate(reviewDay)
+                        if (before == reviewer.revision(reviewDay)) narrative else null
+                    }
+                    if (result != null) review = result else reviewError = "The records changed. Generate the review again."
+                }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { reviewError = "Review unavailable. Try again." }
+                finally { reviewing = false }
             }
-            // The writes must survive leaving this screen; the confirmation below is UI.
-            AppScope.io.launch {
-                val now = System.currentTimeMillis()
-                log.foods.forEach {
-                    db.foods().insert(
-                        FoodEntry(
-                            epochDay = epochDay, createdAt = now, label = it.label,
-                            calories = it.calories, sugarG = it.sugarG, caffeineMg = it.caffeineMg,
-                        )
-                    )
-                }
-                val cur = db.habits().get(epochDay) ?: HabitDay(epochDay)
-                val merged = cur.copy(
-                    showered = log.showered ?: cur.showered,
-                    cleanClothes = log.cleanClothes ?: cur.cleanClothes,
-                    workedOut = log.workedOut ?: cur.workedOut,
-                    prayed = log.prayed ?: cur.prayed,
-                )
-                if (merged != cur) db.habits().upsert(merged)
-            }
-            haptics.confirm()
-            val parts = buildList {
-                if (log.foods.isNotEmpty()) add(log.foods.joinToString(", ") { it.label })
-                val n = listOfNotNull(log.showered, log.cleanClothes, log.workedOut, log.prayed).size
-                if (n > 0) add("$n habit${if (n > 1) "s" else ""}")
-            }
-            snackbar.showSnackbar("Logged " + parts.joinToString(" · "))
         }
-    }
-
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 120.dp),
-            ) {
-                item(key = "head") {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 8.dp, top = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Daily",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = { epochDay-- }) {
-                            Icon(Icons.Filled.ChevronLeft, "Previous day")
-                        }
-                        Text(date.format(dateFmt), style = MaterialTheme.typography.titleSmall)
-                        IconButton(onClick = { epochDay++ }, enabled = !isToday) {
-                            Icon(Icons.Filled.ChevronRight, "Next day")
+        Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 220.dp)) {
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Daily", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { showPreferences = true }) { Icon(Icons.Filled.Tune, "Daily targets and visible habits") }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { epochDay-- }) { Icon(Icons.Filled.ChevronLeft, "Previous day") }
+                                Text(date.format(dateFmt), modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                                IconButton(onClick = { epochDay++ }, enabled = epochDay < AppTime.today().toEpochDay()) { Icon(Icons.Filled.ChevronRight, "Next day") }
+                            }
+                            if (date != AppTime.today()) TextButton(onClick = { epochDay = AppTime.today().toEpochDay() }) { Text("Back to today") }
                         }
                     }
-                }
-
-                item(key = "intake") {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        IntakeCard("Calories", calories.toString(), "kcal", calories / 2000f, CAL, Modifier.weight(1f))
-                        IntakeCard("Sugar", sugar.toInt().toString(), "g", sugar.toFloat() / 50f, SUGAR, Modifier.weight(1f))
-                        IntakeCard("Caffeine", caffeine.toString(), "mg", caffeine / 400f, CAFFEINE, Modifier.weight(1f))
-                    }
-                }
-
-                item(key = "habits") {
-                    Column(Modifier.padding(horizontal = 16.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            HabitToggle("Showered", Icons.Filled.Shower, habit.showered, { toggle(Habit.SHOWER) }, Modifier.weight(1f))
-                            HabitToggle("Clean clothes", Icons.Filled.Checkroom, habit.cleanClothes, { toggle(Habit.CLOTHES) }, Modifier.weight(1f))
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            HabitToggle("Worked out", Icons.Filled.FitnessCenter, habit.workedOut, { toggle(Habit.WORKOUT) }, Modifier.weight(1f))
-                            HabitToggle("Prayed", Icons.Filled.SelfImprovement, habit.prayed, { toggle(Habit.PRAY) }, Modifier.weight(1f))
+                    if (!daily.loaded) item {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(daily.error ?: "Loading this day’s records…", color = if (daily.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (daily.error != null) TextButton(onClick = { loadRevision++ }) { Text("Retry") }
                         }
                     }
-                }
-
-                item(key = "week") {
-                    WeeklyStrip(week, weekByDay, epochDay) { epochDay = it }
-                }
-
-                item(key = "review") {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                            .padding(14.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Day review",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(
-                                enabled = !reviewing,
-                                onClick = {
-                                    reviewing = true
-                                    scope.launch {
-                                        val r = withContext(Dispatchers.IO) { dayReview.generate(epochDay) }
-                                        review = r
-                                        reviewing = false
-                                    }
-                                },
-                            ) { Text(if (reviewing) "Thinking…" else "✨ Generate") }
-                        }
-                        review?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(top = 6.dp),
-                            )
+                    if (daily.loaded) {
+                    item {
+                        // Vertical cards retain labels/values at large font scale and narrow widths.
+                        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            IntakeCard("Calories", foods.sumOf { it.calories }.toDouble(), "kcal", preferences.calorieTarget, preferences.targetsEnabled)
+                            IntakeCard("Sugar", foods.sumOf { it.sugarG }, "g", preferences.sugarTarget, preferences.targetsEnabled)
+                            IntakeCard("Caffeine", foods.sumOf { it.caffeineMg }.toDouble(), "mg", preferences.caffeineTarget, preferences.targetsEnabled)
+                            if (foods.any { it.estimated }) Text("Includes estimated servings. Tap an entry to correct it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                }
-
-                item(key = "food-head") {
-                    Text(
-                        "Food & drink",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
-                    )
-                }
-
-                if (foods.isEmpty()) {
-                    item(key = "food-empty") {
-                        Text(
-                            "Nothing logged yet. Hold the mic and say what you had, or tap +.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        )
-                    }
-                } else {
-                    items(foods, key = { it.id }) { f ->
-                        FoodRow(f, onDelete = { AppScope.io.launch { db.foods().delete(f) } })
-                    }
-                }
-            }
-
-            HoldToTalkButton(
-                onTranscript = { logText(it) },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 20.dp),
-            )
-            FloatingActionButton(
-                onClick = { showAdd = true },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(20.dp),
-            ) { Icon(Icons.Filled.Add, "Add food") }
-        }
-    }
-
-    if (showAdd) {
-        AddFoodSheet(
-            onDismiss = { showAdd = false },
-            onAdd = { text -> showAdd = false; logText(text) },
-        )
-    }
-}
-
-@Composable
-private fun IntakeCard(
-    label: String,
-    value: String,
-    unit: String,
-    fraction: Float,
-    color: Color,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-            .padding(12.dp),
-    ) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(2.dp))
-            Text(unit, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(bottom = 3.dp))
-        }
-        Spacer(Modifier.height(8.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(5.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
-                    .height(5.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(color),
-            )
-        }
-    }
-}
-
-@Composable
-private fun HabitToggle(
-    label: String,
-    icon: ImageVector,
-    done: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = if (done) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        modifier = modifier,
-    ) {
-        Row(
-            Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (done) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (done) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-            )
-        }
-    }
-}
-
-@Composable
-private fun WeeklyStrip(
-    week: List<LocalDate>,
-    byDay: Map<Long, HabitDay>,
-    selected: Long,
-    onPick: (Long) -> Unit,
-) {
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-        Text(
-            "This week",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            week.forEach { d ->
-                val h = byDay[d.toEpochDay()]
-                val flags = listOf(h?.showered == true, h?.cleanClothes == true, h?.workedOut == true, h?.prayed == true)
-                val isSel = d.toEpochDay() == selected
-                Column(
-                    Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (isSel) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-                        .clickable { onPick(d.toEpochDay()) }
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        d.dayOfWeek.getDisplayName(TextStyle.NARROW, Locale.getDefault()),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSel) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    // 2x2 dot grid of habit completion
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Dot(flags[0]); Dot(flags[1])
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Dot(flags[2]); Dot(flags[3])
+                    item {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Habits", style = MaterialTheme.typography.titleMedium)
+                            Text("Tap to cycle: unlogged → done → skipped → unlogged.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            HealthHabit.entries.filter { preferences.visibleHabitMask and it.bit != 0 }.forEach { which ->
+                                HabitToggle(which, todayHabit.value(which), daily.loaded) {
+                                    haptics.tick()
+                                    model.cycle(epochDay, which)
+                                }
+                            }
+                            if (preferences.visibleHabitMask == 0) Text("Choose the habits that matter to you in Daily settings.")
                         }
                     }
+                    item {
+                        val week = remember(epochDay) { (6 downTo 0).map { date.minusDays(it.toLong()) } }
+                        var weekLoaded by remember(epochDay, loadRevision) { mutableStateOf(false) }
+                        var weekError by remember(epochDay, loadRevision) { mutableStateOf(false) }
+                        val history by remember(epochDay, loadRevision) { db.habits().range(week.first().toEpochDay(), epochDay)
+                            .onStart { weekLoaded = false; weekError = false }
+                            .onEach { weekLoaded = true }
+                            .catch { if (it is CancellationException) throw it; weekError = true; emit(emptyList()) }
+                        }.collectAsState(initial = emptyList())
+                        Column(Modifier.padding(horizontal = 16.dp)) {
+                            Text("Last 7 days", style = MaterialTheme.typography.titleMedium)
+                            if (weekError) {
+                                Text("Week history unavailable.", color = MaterialTheme.colorScheme.error)
+                                TextButton(onClick = { loadRevision++ }) { Text("Retry history") }
+                            }
+                            else if (!weekLoaded) Text("Loading week history…")
+                            else week.forEach { d ->
+                                val row = history.firstOrNull { it.epochDay == d.toEpochDay() }
+                                val done = HealthHabit.entries.count { preferences.visibleHabitMask and it.bit != 0 && row?.value(it) == true }
+                                val known = HealthHabit.entries.count { preferences.visibleHabitMask and it.bit != 0 && row?.value(it) != null }
+                                TextButton(onClick = { epochDay = d.toEpochDay() }, modifier = Modifier.fillMaxWidth().semantics {
+                                    contentDescription = "${d.format(dateFmt)}, $done habits done, $known logged"
+                                    stateDescription = if (d == date) "Selected day" else ""
+                                }) { Text("${d.format(DateTimeFormatter.ofPattern("EEE, MMM d"))} · $done done, $known logged") }
+                            }
+                        }
+                    }
+                    item {
+                        Surface(Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text("Day review", style = MaterialTheme.typography.titleMedium)
+                                TextButton(enabled = !reviewing && daily.loaded, onClick = { reviewRequest++ }) { Text(if (reviewing) "Reviewing…" else "Generate from this day's records") }
+                                if (reviewing) TextButton(onClick = { reviewCancellation++ }) { Text("Cancel review") }
+                                review?.let { Text(it) }
+                                reviewError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                    }
+                    item { Text("Food & drink", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp)) }
+                    if (daily.loaded && foods.isEmpty()) item { Text("No food recorded for this day. Add a description or enter nutrition manually.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
+                    items(foods, key = { it.id }) { entry ->
+                        FoodRow(entry, onEdit = { nutritionEditor = NutritionEditor(FoodItem(entry.label, entry.calories, entry.sugarG, entry.caffeineMg, entry.estimated, entry.provenance), entry.epochDay, entry) }, onDelete = {
+                            model.deleteFood(entry) {
+                                scope.launch {
+                                    if (snackbar.showSnackbar("Deleted ${entry.label}", actionLabel = "Undo") == SnackbarResult.ActionPerformed) model.restoreFood(entry)
+                                }
+                            }
+                        })
+                    }
+                    }
+                }
+                HoldToTalkButton(onTranscript = { model.parse(it, voiceTargetDay, voiceReferenceDay) }, onRecordingStart = { voiceTargetDay = epochDay; voiceReferenceDay = AppTime.today().toEpochDay() }, enabled = !operation.parsing && !operation.saving,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp))
+                FloatingActionButton(onClick = { if (!operation.parsing && !operation.saving) addingDay = epochDay }, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)) { Icon(Icons.Filled.Add, "Add food or habit") }
+                if (operation.parsing || operation.saving) Surface(Modifier.align(Alignment.BottomStart).padding(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                    Text(if (operation.parsing) "Preparing preview…" else "Saving…", modifier = Modifier.padding(12.dp))
                 }
             }
         }
     }
+    addingDay?.let { day -> AddFoodSheet(onDismiss = { addingDay = null }, onParse = { text -> addingDay = null; model.parse(text, day) }, onManual = {
+        addingDay = null; nutritionEditor = NutritionEditor(FoodItem("", 0, 0.0, 0, false, "Manual nutrition"), day)
+    }) }
+    operation.draft?.let { draft -> HealthPreviewSheet(draft, operation.saving, onDismiss = model::dismissDraft, onSave = model::saveDraft, onChange = model::revise, onMoveDay = model::moveDraftDay,
+        onEdit = { index -> nutritionEditor = NutritionEditor(if (index >= 0) draft.log.foods[index] else FoodItem("", 0, 0.0, 0, false, "Manual nutrition"), draft.day, draftIndex = index) }) }
+    nutritionEditor?.let { editor -> NutritionSheet(editor.food, day = if (editor.draftIndex == null) editor.day else null, onMoveDay = { delta -> nutritionEditor = editor.copy(day = editor.day + delta) }, onDismiss = { nutritionEditor = null }) { food ->
+        nutritionEditor = null
+        when {
+            editor.entry != null -> model.updateFood(editor.entry.copy(epochDay = editor.day, label = food.label, calories = food.calories, sugarG = food.sugarG, caffeineMg = food.caffeineMg, estimated = food.estimated, provenance = food.provenance))
+            editor.draftIndex != null -> operation.draft?.let { draft -> model.revise(draft.log.copy(foods = draft.log.foods.toMutableList().also { if (editor.draftIndex < 0) it.add(food) else it[editor.draftIndex] = food })) }
+            else -> model.manual(food, editor.day)
+        }
+    } }
+    if (showPreferences) HealthSettingsDialog(preferences, onDismiss = { showPreferences = false }) {
+        preferences = it; settingsStore.save(it); showPreferences = false
+    }
 }
 
-@Composable
-private fun Dot(on: Boolean) {
-    Box(
-        Modifier
-            .size(7.dp)
-            .clip(CircleShape)
-            .background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
-    )
+@Composable private fun IntakeCard(label: String, value: Double, unit: String, target: Int, targetsEnabled: Boolean) {
+    val display = if (value % 1.0 == 0.0) value.toInt().toString() else "%.1f".format(value)
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Text("$label: $display $unit", style = MaterialTheme.typography.titleMedium)
+            if (targetsEnabled) {
+                Text("Personal target $target $unit" + if (value > target) " · over by ${value.toInt() - target} $unit" else "", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LinearProgressIndicator(progress = { (value / target).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            }
+        }
+    }
 }
-
-@Composable
-private fun FoodRow(food: FoodEntry, onDelete: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Filled.Restaurant,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.outline,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
+@Composable private fun HabitToggle(habit: HealthHabit, value: Boolean?, enabled: Boolean, onClick: () -> Unit) {
+    val status = when (value) { true -> "Done"; false -> "Skipped"; null -> "Unlogged" }
+    Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(12.dp), color = if (value == true) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().semantics { stateDescription = status; contentDescription = habit.label }) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(habit.label, modifier = Modifier.weight(1f)); Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+@Composable private fun FoodRow(food: FoodEntry, onEdit: () -> Unit, onDelete: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).clickable(role = Role.Button, onClick = onEdit).padding(vertical = 8.dp)) {
             Text(food.label, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                buildString {
-                    append("${food.calories} kcal")
-                    if (food.sugarG > 0) append(" · ${food.sugarG.toInt()}g sugar")
-                    if (food.caffeineMg > 0) append(" · ${food.caffeineMg}mg caffeine")
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text("${if (food.estimated) "Estimate · " else ""}${food.calories} kcal · ${food.sugarG} g sugar · ${food.caffeineMg} mg caffeine", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${food.provenance} · Tap to edit", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Filled.DeleteOutline, "Delete", tint = MaterialTheme.colorScheme.outline)
+        IconButton(onClick = onDelete) { Icon(Icons.Filled.DeleteOutline, "Delete ${food.label}") }
+    }
+}
+@Composable private fun AddFoodSheet(onDismiss: () -> Unit, onParse: (String) -> Unit, onManual: () -> Unit) {
+    var text by rememberSaveable { mutableStateOf("") }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().imePadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Add food or habit", style = MaterialTheme.typography.titleLarge)
+            Text("Descriptions create an editable preview. Other foods can use manual nutrition entry.")
+            OutlinedTextField(text, { text = it }, label = { Text("e.g. two coffees and a banana") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { onParse(text.trim()) }, enabled = text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Preview description") }
+            TextButton(onClick = onManual, modifier = Modifier.fillMaxWidth()) { Text("Enter nutrition manually") }
         }
     }
 }
-
-@Composable
-private fun AddFoodSheet(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var text by remember { mutableStateOf("") }
-    val focus = remember { FocusRequester() }
-
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .imePadding() // lift the field above the keyboard (edge-to-edge is on)
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text("Add food or drink", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Type what you had — nutrition is estimated for you.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text("e.g. coffee and a banana") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { if (text.isNotBlank()) onAdd(text.trim()) }),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(focus),
-            )
-            LaunchedEffect(Unit) {
-                // Small settle delay so the sheet is up before we pull the keyboard.
-                delay(250)
-                runCatching { focus.requestFocus() }
+@Composable private fun HealthPreviewSheet(draft: HealthDraft, saving: Boolean, onDismiss: () -> Unit, onSave: () -> Unit, onChange: (HealthLog) -> Unit, onMoveDay: (Long) -> Unit, onEdit: (Int) -> Unit) {
+    ModalBottomSheet(onDismissRequest = { if (!saving) onDismiss() }) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Check before saving", style = MaterialTheme.typography.titleLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { onMoveDay(-1) }, enabled = !saving) { Icon(Icons.Filled.ChevronLeft, "Log on previous day") }
+                Text("For ${LocalDate.ofEpochDay(draft.day).format(dateFmt)}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                IconButton(onClick = { onMoveDay(1) }, enabled = !saving && draft.day < AppTime.today().toEpochDay()) { Icon(Icons.Filled.ChevronRight, "Log on next day") }
             }
-            Button(
-                onClick = { onAdd(text.trim()) },
-                enabled = text.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Add") }
+            draft.log.warnings.forEach { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            draft.log.foods.forEachIndexed { index, food ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { onEdit(index) }, enabled = !saving, modifier = Modifier.weight(1f)) { Text("${food.label} · ${food.calories} kcal · ${food.sugarG} g sugar · ${food.caffeineMg} mg caffeine") }
+                    IconButton(onClick = { onChange(draft.log.copy(foods = draft.log.foods.filterIndexed { i, _ -> i != index })) }, enabled = !saving) { Icon(Icons.Filled.Close, "Remove ${food.label}") }
+                }
+            }
+            TextButton(onClick = { onEdit(-1) }, enabled = !saving) { Text("Add missing food manually") }
+            val values = listOf(draft.log.showered, draft.log.cleanClothes, draft.log.workedOut, draft.log.prayed)
+            HealthHabit.entries.forEachIndexed { index, habit ->
+                values[index]?.let { value ->
+                    TextButton(enabled = !saving, onClick = {
+                        val next: Boolean? = if (value) false else null
+                        onChange(when (habit) { HealthHabit.SHOWER -> draft.log.copy(showered = next); HealthHabit.CLOTHES -> draft.log.copy(cleanClothes = next); HealthHabit.WORKOUT -> draft.log.copy(workedOut = next); HealthHabit.PRAY -> draft.log.copy(prayed = next) })
+                    }) { Text("${habit.label}: ${if (value) "done" else "skipped"} · tap to change/remove") }
+                }
+            }
+            Button(onClick = onSave, enabled = !saving && !draft.log.isEmpty && draft.log.foods.all { it.valid }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving…" else "Save to this day") }
+            TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") }
         }
     }
+}
+@Composable private fun NutritionSheet(initial: FoodItem, day: Long?, onMoveDay: (Long) -> Unit, onDismiss: () -> Unit, onSave: (FoodItem) -> Unit) {
+    var name by remember { mutableStateOf(initial.label) }
+    var calories by remember { mutableStateOf(initial.calories.toString()) }
+    var sugar by remember { mutableStateOf(initial.sugarG.toString()) }
+    var caffeine by remember { mutableStateOf(initial.caffeineMg.toString()) }
+    var estimated by remember { mutableStateOf(initial.estimated) }
+    val item = FoodItem(name.trim(), calories.toIntOrNull() ?: -1, sugar.toDoubleOrNull() ?: Double.NaN, caffeine.toIntOrNull() ?: -1, estimated, if (estimated) "Edited serving estimate" else "Manual nutrition")
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Food nutrition") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            day?.let { target -> Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { onMoveDay(-1) }) { Icon(Icons.Filled.ChevronLeft, "Previous food date") }
+                Text(LocalDate.ofEpochDay(target).format(dateFmt), modifier = Modifier.weight(1f))
+                IconButton(onClick = { onMoveDay(1) }, enabled = target < AppTime.today().toEpochDay()) { Icon(Icons.Filled.ChevronRight, "Next food date") }
+            } }
+            OutlinedTextField(name, { name = it }, label = { Text("Food or drink") })
+            OutlinedTextField(calories, { calories = it }, label = { Text("Calories (kcal)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(sugar, { sugar = it }, label = { Text("Sugar (g)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+            OutlinedTextField(caffeine, { caffeine = it }, label = { Text("Caffeine (mg)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(estimated, { estimated = it }); Text("These values are estimates") }
+            if (!item.valid) Text("Enter a name and finite, nonnegative nutrition values.", color = MaterialTheme.colorScheme.error)
+        }
+    }, confirmButton = { TextButton(onClick = { onSave(item) }, enabled = item.valid) { Text("Use these values") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+@Composable private fun HealthSettingsDialog(initial: HealthPreferences, onDismiss: () -> Unit, onSave: (HealthPreferences) -> Unit) {
+    var enabled by remember { mutableStateOf(initial.targetsEnabled) }
+    var calories by remember { mutableStateOf(initial.calorieTarget.toString()) }
+    var sugar by remember { mutableStateOf(initial.sugarTarget.toString()) }
+    var caffeine by remember { mutableStateOf(initial.caffeineTarget.toString()) }
+    var mask by remember { mutableIntStateOf(initial.visibleHabitMask) }
+    val valid = (calories.toIntOrNull() ?: 0) in 1..100_000 && (sugar.toIntOrNull() ?: 0) in 1..10_000 && (caffeine.toIntOrNull() ?: 0) in 1..10_000
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Your Daily view") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(enabled, { enabled = it }); Text("Show my personal targets") }
+            Text("Targets are optional personal preferences.")
+            OutlinedTextField(calories, { calories = it }, label = { Text("Calories target (kcal)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(sugar, { sugar = it }, label = { Text("Sugar target (g)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(caffeine, { caffeine = it }, label = { Text("Caffeine target (mg)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            Text("Visible habits", style = MaterialTheme.typography.titleSmall)
+            HealthHabit.entries.forEach { habit -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(mask and habit.bit != 0, { mask = if (it) mask or habit.bit else mask and habit.bit.inv() }); Text(habit.label)
+            } }
+        }
+    }, confirmButton = { TextButton(enabled = valid, onClick = { onSave(HealthPreferences(enabled, calories.toInt(), sugar.toInt(), caffeine.toInt(), mask)) }) { Text("Save preferences") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }

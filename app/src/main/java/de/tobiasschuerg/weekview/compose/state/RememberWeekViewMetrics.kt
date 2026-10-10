@@ -19,7 +19,7 @@ internal fun rememberWeekViewMetrics(
     // Derive stable keys from the event list so remember uses value equality (LocalTime)
     // instead of list reference equality which changes every recomposition
     val earliestEventStart = events.minOfOrNull { it.timeSpan.start } ?: timeRange.start
-    val latestEventEnd = events.maxOfOrNull { it.timeSpan.endExclusive } ?: timeRange.endExclusive
+    val latestEventEnd = events.maxOfOrNull { it.timeSpan.endSecondExclusive } ?: timeRange.endSecondExclusive
 
     return remember(dateRange, timeRange, earliestEventStart, latestEventEnd, scalingFactor) {
         val days = dateRange.toList()
@@ -31,18 +31,11 @@ internal fun rememberWeekViewMetrics(
 
         val rowHeightDp = 60.dp * scalingFactor
 
-        val gridEndTime =
-            if (latestEventEnd.hour < 23) {
-                LocalTime.of(latestEventEnd.hour + 1, 0)
-            } else {
-                LocalTime.MAX
-            }
-        val effectiveEndTime = if (gridEndTime.isAfter(timeRange.endExclusive)) gridEndTime else timeRange.endExclusive
-
+        val effectiveEndSecond = maxOf(timeRange.endSecondExclusive, kotlin.math.ceil(latestEventEnd / 3600.0) * 3600.0).coerceAtMost(86400.0)
+        val effectiveEndTime = if (effectiveEndSecond == 86400.0) LocalTime.MAX else LocalTime.ofSecondOfDay(effectiveEndSecond.toLong())
         val gridStartTime = effectiveStartTime.truncatedTo(ChronoUnit.HOURS)
-        val visibleTimeSpan = TimeSpan(gridStartTime, effectiveEndTime)
-
-        val totalHours = visibleTimeSpan.duration.toHours().toFloat() + (visibleTimeSpan.duration.toMinutes() % 60 / 60f)
+        val visibleTimeSpan = TimeSpan.fromSeconds(gridStartTime.toNanoOfDay() / 1e9, effectiveEndSecond)
+        val totalHours = (visibleTimeSpan.duration.toNanos() / 3_600_000_000_000.0).toFloat()
         val gridHeightDp = rowHeightDp * totalHours
         val timeLabels = visibleTimeSpan.hourlyTimes().toList()
 

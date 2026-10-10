@@ -1,476 +1,178 @@
 package com.bibo.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bookmarks
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.bibo.data.AppScope
-import com.bibo.data.BiboDb
-import kotlinx.coroutines.async
-import com.bibo.data.ChatMessage
+import com.bibo.data.*
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
-/** The Mentor tab: a continuous chat with a coach that sees everything Bibo logs. */
 @Composable
 fun ChatScreen() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val context = LocalContext.current.applicationContext
     val db = remember { BiboDb.get(context) }
-    val messages by db.chat().all().collectAsStateWithLifecycle(emptyList())
-
-    var hasKey by remember { mutableStateOf(Mentor.apiKey(context) != null) }
-    var showKeyDialog by remember { mutableStateOf(false) }
+    var pageSize by remember { mutableIntStateOf(100) }
+    val messageFlow = remember(pageSize) { db.mentorHistory().recent(pageSize) }
+    val messages by messageFlow.collectAsStateWithLifecycle(emptyList())
+    val turns by db.mentorTurns().all().collectAsStateWithLifecycle(emptyList())
+    val commands by db.commands().all().collectAsStateWithLifecycle(emptyList())
+    val settingsRevision by MentorSettings.revision.collectAsStateWithLifecycle()
+    var input by remember { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var showMemory by remember { mutableStateOf(false) }
     var showPersona by remember { mutableStateOf(false) }
-    var input by remember { mutableStateOf("") }
-    var sending by remember { mutableStateOf(false) }
-
-    val today = remember { LocalDate.now().toEpochDay() }
+    var showKey by remember { mutableStateOf(false) }
+    var localError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-
-    fun submit(raw: String) {
-        val text = raw.trim()
-        if (text.isBlank() || sending || !hasKey) return
-        input = ""
-        sending = true
-        // The request itself runs on a scope that outlives this screen — leaving the tab
-        // mid-send used to cancel it, which surfaced as a bogus "rememberCoroutineScope
-        // left the composition" error row and could drop a reply whose tool calls had
-        // already run. Only the UI flag is tied to the composition.
-        val job = AppScope.io.async { Mentor.send(context, text) }
-        scope.launch {
-            job.join()
-            sending = false
+    val today by produceState(LocalDate.now().toEpochDay()) { while (true) { value = LocalDate.now().toEpochDay(); delay(30_000) } }
+    val busy = submitting || turns.any { it.status in setOf("QUEUED", "GENERATING", "APPLYING") }
+    val connected = remember(settingsRevision) { Mentor.isConnected(context) }
+    LaunchedEffect(Unit) { Mentor.recover(context) }
+    fun submit() {
+        if (input.isBlank() || busy || !connected) return
+        val text = input.trim(); submitting = true
+        AppScope.io.launch {
+            runCatching { Mentor.enqueue(context, text) }.onSuccess { input = "" }.onFailure { localError = it.message ?: "Message could not be queued." }
+            submitting = false
         }
     }
-
-    // Newest message is index 0 (reverseLayout) — snap there whenever one lands.
-    LaunchedEffect(messages.size, sending) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(0)
+    val timeline = remember(messages, turns, commands) {
+        buildList<Pair<Long, Any>> {
+            messages.forEach { add(it.createdAt to it) }
+            turns.filter { it.status != "DONE" }.forEach { add((it.createdAt + 1) to it) }
+            commands.filter { it.kind.any(Char::isLowerCase) && !it.id.contains(":local") }.forEach { add(it.createdAt to it) }
+        }.sortedByDescending { it.first }
     }
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .imePadding()
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 4.dp, top = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Mentor", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            if (hasKey) {
-                IconButton(onClick = { showPersona = true }) {
-                    Icon(Icons.Filled.Tune, contentDescription = "Mentor personality")
-                }
-                IconButton(onClick = { showMemory = true }) {
-                    Icon(Icons.Filled.Bookmarks, contentDescription = "What the mentor remembers")
-                }
-            }
-            IconButton(onClick = { showKeyDialog = true }) {
-                Icon(Icons.Filled.Key, contentDescription = "API key")
-            }
+    LaunchedEffect(messages.firstOrNull()?.id) { if (listState.firstVisibleItemIndex <= 2 && timeline.isNotEmpty()) listState.animateScrollToItem(0) }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Mentor", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+            IconButton(onClick = { showMemory = true }) { Icon(Icons.Filled.Bookmarks, "Memory notes") }
+            IconButton(onClick = { showPersona = true }) { Icon(Icons.Filled.Tune, "Coach tone") }
+            IconButton(onClick = { showSettings = true }) { Icon(Icons.Filled.Settings, "Mentor settings") }
         }
-
-        if (!hasKey) {
-            KeySetupCard(
-                onSave = { key ->
-                    Mentor.setApiKey(context, key)
-                    hasKey = Mentor.apiKey(context) != null
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(24.dp),
-            )
-        } else {
-            // Ascending messages interleaved with date headers, reversed for reverseLayout.
-            val display = remember(messages, sending) {
-                buildList {
-                    var lastDay = -1L
-                    messages.forEach { m ->
-                        if (m.epochDay != lastDay) {
-                            add(ChatRow.DateHeader(m.epochDay))
-                            lastDay = m.epochDay
-                        }
-                        add(ChatRow.Msg(m))
-                    }
-                    if (sending) add(ChatRow.Typing)
-                }.reversed()
-            }
-
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 12.dp, vertical = 8.dp,
-                ),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (display.isEmpty()) {
-                    item { EmptyChatHint() }
-                }
-                items(display.size) { i ->
-                    when (val row = display[i]) {
-                        is ChatRow.DateHeader -> DateHeader(row.epochDay, today)
-                        is ChatRow.Msg -> MessageBubble(row.message)
-                        ChatRow.Typing -> TypingBubble()
-                    }
+        if (!connected) {
+            Card(Modifier.padding(16.dp)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("An optional coach for your plans and progress", style = MaterialTheme.typography.titleMedium)
+                Text("Your local tasks, calendar, and timer work without a connection. Mentor uses OpenRouter cloud processing; you choose which records to share and whether it can contact you automatically.")
+                Button(onClick = { showKey = true }) { Text("Connect Mentor") }
+            } }
+        }
+        LazyColumn(state = listState, reverseLayout = true, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(timeline.size, key = { index -> when (val row = timeline[index].second) { is ChatMessage -> "message:${row.id}"; is MentorTurn -> "turn:${row.id}"; is CommandRecord -> "command:${row.id}"; else -> "row:$index" } }) { index ->
+                when (val row = timeline[index].second) {
+                    is ChatMessage -> MessageBubble(row, today)
+                    is MentorTurn -> TurnCard(row, onCancel = { Mentor.cancel(context, row.id) }, onRetry = { Mentor.retry(context, row.id) })
+                    is CommandRecord -> ActionCard(row)
                 }
             }
-
-            val todayHasChat = messages.any { it.epochDay == today && it.role == "USER" }
-            if (!todayHasChat && !sending) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf(
-                        "Reflect on my day",
-                        "What should I focus on right now?",
-                        "How am I doing on my goals?",
-                    ).forEach { suggestion ->
-                        AssistChip(onClick = { submit(suggestion) }, label = { Text(suggestion) })
-                    }
-                }
-            }
-
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    placeholder = { Text("Message your mentor…") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { submit(input) }),
-                )
-                HoldToTalkButton(
-                    onTranscript = { spoken ->
-                        input = (input.trim() + " " + spoken).trim()
-                    },
-                )
-                IconButton(onClick = { submit(input) }, enabled = input.isNotBlank() && !sending) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
-                }
-            }
+            if (messages.size >= pageSize) item { TextButton(onClick = { pageSize += 100 }) { Text("Load older messages") } }
+            if (timeline.isEmpty()) item { Text("Choose a small next step, reflect on your day, or ask about a goal. Only the categories you enable in Mentor settings are shared.", Modifier.padding(16.dp)) }
+        }
+        localError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
+        if (connected) Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(input, { input = it }, modifier = Modifier.weight(1f), placeholder = { Text("Message your mentor…") }, maxLines = 4, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { submit() }))
+            HoldToTalkButton(compact = true, onTranscript = { input = (input.trim() + " " + it).trim() })
+            IconButton(onClick = { submit() }, enabled = input.isNotBlank() && !busy) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
         }
     }
-
-    if (showKeyDialog) {
-        KeyDialog(
-            initial = Mentor.apiKey(context).orEmpty(),
-            onDismiss = { showKeyDialog = false },
-            onSave = { key ->
-                Mentor.setApiKey(context, key)
-                hasKey = Mentor.apiKey(context) != null
-                showKeyDialog = false
-            },
-        )
-    }
-
-    if (showMemory) {
-        MemoryDialog(
-            initial = Mentor.memory(context),
-            onDismiss = { showMemory = false },
-            onSave = { text ->
-                Mentor.saveMemory(context, text)
-                showMemory = false
-            },
-        )
-    }
-
-    if (showPersona) {
-        PersonaDialog(
-            initial = Mentor.persona(context),
-            onDismiss = { showPersona = false },
-            onSave = { text ->
-                Mentor.setPersona(context, text)
-                showPersona = false
-            },
-        )
-    }
+    if (showSettings) MentorSettingsDialog { showSettings = false }
+    if (showKey) MentorKeyDialog { showKey = false }
+    if (showMemory) MemoryDialog { showMemory = false }
+    if (showPersona) PersonaDialog { showPersona = false }
 }
 
 @Composable
-private fun PersonaDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var text by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Mentor personality") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "This is the voice half of the mentor's instructions — edit it freely. " +
-                        "Its abilities (tasks, memory, your data) stay intact whatever you write.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    minLines = 8,
-                    maxLines = 14,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                TextButton(onClick = { text = Mentor.DEFAULT_PERSONA }) {
-                    Text("Reset to default")
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank()) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
-private fun MemoryDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var text by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("What your mentor remembers") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Durable facts your mentor carries across days. Edit or delete anything — " +
-                        "it's rewritten and tidied each night.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    placeholder = { Text("Nothing saved yet — facts appear here as you talk.") },
-                    minLines = 6,
-                    maxLines = 16,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-private sealed interface ChatRow {
-    data class Msg(val message: ChatMessage) : ChatRow
-    data class DateHeader(val epochDay: Long) : ChatRow
-    data object Typing : ChatRow
-}
-
-@Composable
-private fun MessageBubble(message: ChatMessage) {
-    val isUser = message.role == "USER"
-    val isError = message.role == "ERROR"
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-    ) {
-        Surface(
-            color = when {
-                isError -> MaterialTheme.colorScheme.errorContainer
-                isUser -> MaterialTheme.colorScheme.primaryContainer
-                else -> MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-            shape = RoundedCornerShape(
-                topStart = 18.dp, topEnd = 18.dp,
-                bottomStart = if (isUser) 18.dp else 4.dp,
-                bottomEnd = if (isUser) 4.dp else 18.dp,
-            ),
-            modifier = Modifier.widthIn(max = 320.dp),
-        ) {
-            Text(
-                message.content,
-                style = MaterialTheme.typography.bodyLarge,
-                color = when {
-                    isError -> MaterialTheme.colorScheme.onErrorContainer
-                    isUser -> MaterialTheme.colorScheme.onPrimaryContainer
-                    else -> MaterialTheme.colorScheme.onSurface
-                },
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun TypingBubble() {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(18.dp),
-        ) {
-            Row(
-                Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                Text("thinking…", style = MaterialTheme.typography.bodyMedium)
+private fun MessageBubble(message: ChatMessage, today: Long) {
+    val user = message.role == "USER"
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
+        Surface(color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(16.dp), modifier = Modifier.widthIn(max = 340.dp)) {
+            Column(Modifier.padding(12.dp)) {
+                Text(message.content)
+                if (message.epochDay != today) Text(LocalDate.ofEpochDay(message.epochDay).format(DateTimeFormatter.ofPattern("EEE, MMM d")), style = MaterialTheme.typography.labelSmall)
             }
         }
     }
 }
-
 @Composable
-private fun DateHeader(epochDay: Long, today: Long) {
-    val label = when (epochDay) {
-        today -> "Today"
-        today - 1 -> "Yesterday"
-        else -> LocalDate.ofEpochDay(epochDay).format(DateTimeFormatter.ofPattern("EEE, MMM d"))
-    }
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 6.dp),
-        )
-    }
+private fun TurnCard(turn: MentorTurn, onCancel: () -> Unit, onRetry: () -> Unit) {
+    val pending = turn.status in setOf("QUEUED", "GENERATING", "APPLYING")
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
+        Text(when (turn.status) { "QUEUED" -> "Message queued"; "GENERATING" -> "Mentor is thinking…"; "APPLYING" -> "Applying a recorded action…"; "CANCELLED" -> "Message cancelled"; "INTERRUPTED" -> "Conversation interrupted"; else -> "Mentor could not finish" }, style = MaterialTheme.typography.titleSmall)
+        turn.error?.let { Text(it) }
+        if (pending) TextButton(onClick = onCancel) { Text("Cancel") } else TextButton(onClick = onRetry) { Text("Retry safely") }
+    } }
 }
-
 @Composable
-private fun EmptyChatHint() {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(
-            Icons.Filled.Psychology,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(48.dp),
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "Your mentor sees your goals, focus sessions, habits, food, and screen time — " +
-                "and remembers your conversations from day to day. Say hi, or reflect on today.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
-@Composable
-private fun KeySetupCard(onSave: (String) -> Unit, modifier: Modifier = Modifier) {
-    var key by remember { mutableStateOf("") }
-    Box(modifier, contentAlignment = Alignment.Center) {
-        Card {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Connect your mentor", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "The mentor runs on GLM-5.2 via OpenRouter. Paste an OpenRouter API key " +
-                        "(openrouter.ai/keys). It's stored only on this phone and used only " +
-                        "for your mentor chats.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = key,
-                    onValueChange = { key = it },
-                    placeholder = { Text("sk-or-v1-…") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(
-                    onClick = { onSave(key) },
-                    enabled = key.trim().length > 10,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Save") }
-            }
+private fun ActionCard(record: CommandRecord) {
+    val context = LocalContext.current.applicationContext
+    var running by remember(record.id) { mutableStateOf(false) }
+    var error by remember(record.id) { mutableStateOf<String?>(null) }
+    val details = remember(record.result) { runCatching { JSONObject(record.result) }.getOrNull() }
+    val scope = rememberCoroutineScope()
+    fun act(block: suspend () -> Unit) {
+        running = true
+        AppScope.io.launch {
+            try { block() } catch (e: Exception) { error = e.message ?: "Action could not be applied." } finally { running = false }
         }
     }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(when (record.status) { "AWAITING_CONFIRMATION" -> "Review proposed change"; "APPLIED" -> "Change applied"; "UNDONE" -> "Change undone"; "EXISTS" -> "Already in your records"; "AMBIGUOUS", "PENDING" -> "Check the destination before retrying"; "CANCELLED" -> "Proposal dismissed"; else -> "Change could not be applied" }, style = MaterialTheme.typography.titleSmall)
+        Text(details?.optString("message")?.ifBlank { null } ?: "This action has no confirmed outcome yet.")
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Row {
+            if (record.status == "AWAITING_CONFIRMATION") {
+                TextButton(enabled = !running, onClick = { act { MentorTools.applyPending(context, record.id) } }) { Text("Apply") }
+                TextButton(enabled = !running, onClick = { act { MentorTools.dismissPending(context, record.id) } }) { Text("Dismiss") }
+            }
+            if (record.status == "APPLIED" && (record.kind in setOf("create_task", "delete_task", "delete_goal") || record.kind == "complete_task" && (details?.optLong("completion_id", -1) ?: -1) > 0)) TextButton(enabled = !running, onClick = { act { MentorTools.undo(context, record.id) } }) { Text("Undo") }
+        }
+    } }
 }
-
 @Composable
-private fun KeyDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var key by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("OpenRouter API key") },
-        text = {
-            OutlinedTextField(
-                value = key,
-                onValueChange = { key = it },
-                placeholder = { Text("sk-or-v1-…") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(key) }, enabled = key.trim().length > 10) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
+private fun MemoryDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current.applicationContext
+    val db = remember { BiboDb.get(context) }
+    val revisions by db.mentorMemory().all().collectAsStateWithLifecycle(emptyList())
+    var text by remember { mutableStateOf(Mentor.memory(context)) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Memory notes") }, text = { Column {
+        Text("Your edits are authoritative. Automatic summaries cannot replace them. Previous versions can be restored.")
+        OutlinedTextField(text, { text = it.take(8000) }, minLines = 5, maxLines = 12)
+        revisions.drop(1).take(3).forEach { revision -> TextButton(onClick = { text = revision.notes }) { Text("Restore version ${revision.id}") } }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    } }, confirmButton = { TextButton(enabled = !saving, onClick = { saving = true; scope.launch { try { Mentor.saveMemoryAwait(context, text); onDismiss() } catch (_: Exception) { error = "Notes could not be saved." } finally { saving = false } } }) { Text("Save") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+@Composable
+private fun PersonaDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var text by remember { mutableStateOf(Mentor.persona(context)) }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Coach tone") }, text = { Column {
+        Text("Adjust the tone. App safeguards and data-sharing choices always apply.")
+        OutlinedTextField(text, { text = it.take(4000) }, minLines = 6, maxLines = 12)
+        TextButton(onClick = { text = Mentor.DEFAULT_PERSONA }) { Text("Reset") }
+    } }, confirmButton = { TextButton(onClick = { Mentor.setPersona(context, text); onDismiss() }) { Text("Save") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }

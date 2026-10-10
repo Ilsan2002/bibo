@@ -51,6 +51,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -67,6 +68,16 @@ import com.bibo.data.TimerController
 import com.bibo.data.canDrawOverlays
 import com.bibo.data.launchableApps
 import com.bibo.data.requestOverlayPermission
+import com.bibo.data.AppScope
+import com.bibo.data.Capabilities
+import com.bibo.data.SessionTiming
+import com.bibo.data.isWebTrackingEnabled
+import com.bibo.data.openAccessibilitySettings
+import com.bibo.data.AppTime
+import com.bibo.data.DayContext
+import com.bibo.data.WorkSession
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -88,7 +99,9 @@ fun TimerScreen() {
     val context = LocalContext.current
     val db = remember { BiboDb.get(context) }
     val scope = rememberCoroutineScope()
-    val zone = remember { ZoneId.systemDefault() }
+    val dayContext by AppTime.days.collectAsState(initial = DayContext(AppTime.today(), AppTime.zone()))
+    val zone = dayContext.zone
+    val timerViewModel: TimerViewModel = viewModel()
     val haptics = rememberHaptics()
     val notifPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -98,20 +111,24 @@ fun TimerScreen() {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffectEverySecond { now = it }
 
-    val running = TimerController.isRunning(context)
+    val activeSession by TimerController.state.collectAsState()
+    val sessionError by TimerController.error.collectAsState()
+    val running = activeSession != null
+    LaunchedEffect(Unit) { TimerController.initialize(context) }
 
     val goals by db.goals().all().collectAsState(initial = emptyList())
+    val interrupted by db.workSessions().interruptedFlow().collectAsState(initial = emptyList())
 
     // Today's timer/focus sessions
-    val dayStart = LocalDate.now().atStartOfDay(zone).toInstant().toEpochMilli()
-    val dayEnd = LocalDate.now().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-    val todayBlocksFlow = remember(dayStart) { db.activityBlocks().blocksIn(dayStart, dayEnd) }
+    val dayStart = dayContext.date.atStartOfDay(zone).toInstant().toEpochMilli()
+    val dayEnd = dayContext.date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val todayBlocksFlow = remember(dayStart, dayEnd) { db.activityBlocks().blocksIn(dayStart, dayEnd) }
     val todayBlocks by todayBlocksFlow.collectAsState(initial = emptyList())
     val sessions = todayBlocks
-        .filter { it.source == "TIMER" || it.source == "FOCUS" }
+        .filter { it.source == "TIMER" || it.source == "FOCUS" || it.source == "TASK_TIMER" }
         .sortedByDescending { it.startMillis }
 
-    var showReflection by remember { mutableStateOf(false) }
+    val reflectionSessionId by timerViewModel.reflectionSessionId.collectAsState()
 
     // The screen should propose, not just ask: next open top-level tasks become one-tap intentions.
     val allTasks by db.todos().all().collectAsState(initial = emptyList())
@@ -119,21 +136,25 @@ fun TimerScreen() {
         allTasks.filter { it.completedAt == null && it.parentId == null }.take(4)
     }
     // Focused time today / this week (Mon-based) as the screen's feedback loop.
-    val weekStart = remember(dayStart) {
-        LocalDate.now().with(DayOfWeek.MONDAY).atStartOfDay(zone).toInstant().toEpochMilli()
+    val weekStart = remember(dayStart, zone) {
+        dayContext.date.with(DayOfWeek.MONDAY).atStartOfDay(zone).toInstant().toEpochMilli()
     }
-    val weekBlocksFlow = remember(weekStart) { db.activityBlocks().blocksIn(weekStart, dayEnd) }
+    val weekBlocksFlow = remember(weekStart, dayEnd) { db.activityBlocks().blocksIn(weekStart, dayEnd) }
     val weekBlocks by weekBlocksFlow.collectAsState(initial = emptyList())
-    val todayFocusMs = sessions.sumOf { it.endMillis - it.startMillis }
-    val weekFocusMs = weekBlocks
-        .filter { it.source == "TIMER" || it.source == "FOCUS" }
-        .sumOf { it.endMillis - it.startMillis }
+    val todayFocusMs = AppTime.measuredWorkMillis(todayBlocks, dayStart, dayEnd)
+    val weekFocusMs = AppTime.measuredWorkMillis(weekBlocks, weekStart, dayEnd)
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
+            if (sessionError != null) item(key = "session-error") {
+                Column(Modifier.padding(16.dp)) {
+                    Text(sessionError.orEmpty(), color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { TimerController.acknowledgeError() }) { Text("Dismiss") }
+                }
+            }
             item(key = "title") {
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)) {
                     Text("Focus", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -156,8 +177,11 @@ fun TimerScreen() {
             item(key = "main") {
                 if (running) {
                     RunningPanel(
+                        session = activeSession!!,
                         now = now,
-                        onStop = { showReflection = true },
+                        onStop = {
+                            activeSession?.id?.let(timerViewModel::stopAndReflect)
+                        },
                     )
                 } else {
                     SetupPanel(
@@ -168,7 +192,7 @@ fun TimerScreen() {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             }
-                            TimerController.startFocus(context, config)
+                            timerViewModel.start(config)
                             now = System.currentTimeMillis()
                         },
                     )
@@ -188,6 +212,7 @@ fun TimerScreen() {
                     Row(
                         Modifier
                             .fillMaxWidth()
+                            .clickable(enabled = s.sessionId != null) { s.sessionId?.let(timerViewModel::reflect) }
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -204,8 +229,9 @@ fun TimerScreen() {
                             Text(s.title, style = MaterialTheme.typography.bodyLarge)
                             val st = Instant.ofEpochMilli(s.startMillis).atZone(zone)
                             val et = Instant.ofEpochMilli(s.endMillis).atZone(zone)
+                            val fmt = if (st.toLocalDate() == et.toLocalDate()) sessionTimeFmt else DateTimeFormatter.ofPattern("MMM d H:mm")
                             Text(
-                                "${st.format(sessionTimeFmt)} – ${et.format(sessionTimeFmt)}" +
+                                "${st.format(fmt)} – ${et.format(fmt)}" +
                                     (s.note?.let { " · $it" } ?: ""),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -219,16 +245,26 @@ fun TimerScreen() {
                     }
                 }
             }
+            if (interrupted.isNotEmpty()) {
+                item(key = "interrupted-head") { Text("Interrupted sessions", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(16.dp)) }
+                items(interrupted, key = { "interrupted-${it.id}" }) { session ->
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text(session.title, fontWeight = FontWeight.Medium)
+                        Text(if (session.kind == "LEGACY") session.note ?: "Earlier session needs its end time reviewed on the calendar."
+                            else "Saved ${formatDuration(session.elapsedAtAnchorMillis)} of confirmed time; unattended downtime excluded.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
     }
 
-    if (showReflection) {
+    reflectionSessionId?.let { sessionId ->
         ReflectionSheet(
-            onDismiss = { showReflection = false },
+            sessionId = sessionId,
+            onDismiss = timerViewModel::dismissReflection,
             onSave = { note ->
-                showReflection = false
                 haptics.toggleOff()
-                TimerController.stopTimer(context, note)
+                timerViewModel.saveReflection(sessionId, note)
                 now = System.currentTimeMillis()
             },
         )
@@ -246,12 +282,13 @@ private fun LaunchedEffectEverySecond(onTick: (Long) -> Unit) {
 }
 
 @Composable
-private fun RunningPanel(now: Long, onStop: () -> Unit) {
+private fun RunningPanel(session: WorkSession, now: Long, onStop: () -> Unit) {
     val context = LocalContext.current
-    val pomodoro = TimerController.isPomodoro(context)
-    val title = TimerController.runningTitle(context)
-    val start = TimerController.runningStart(context)
-    val blocked = TimerController.blockedApps(context)
+    val pomodoro = session.pomodoro
+    val title = session.title
+    val elapsedMillis = remember(session, now) { TimerController.elapsedMillis(session) }
+    val currentPhase = SessionTiming.phase(elapsedMillis, session.workMin, session.breakMin)
+    val blocked = session.blockedPackages.split(',').filter { it.isNotBlank() }.toSet()
 
     Column(
         Modifier
@@ -260,8 +297,8 @@ private fun RunningPanel(now: Long, onStop: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         if (pomodoro) {
-            val work = TimerController.phase(context) == TimerController.PHASE_WORK
-            val remain = (TimerController.phaseEnd(context) - now).coerceAtLeast(0) / 1000
+            val work = currentPhase.kind == TimerController.PHASE_WORK
+            val remain = currentPhase.remainingMillis / 1000
             Text(
                 if (work) "Focus" else "Break",
                 style = MaterialTheme.typography.titleMedium,
@@ -277,12 +314,12 @@ private fun RunningPanel(now: Long, onStop: () -> Unit) {
                 fontFamily = FontFamily.Monospace,
             )
             Text(
-                "${TimerController.pomodorosDone(context)} pomodoros done",
+                "${currentPhase.pomodorosDone} pomodoros done",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            val elapsed = (now - start) / 1000
+            val elapsed = elapsedMillis / 1000
             Text(title, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             Text(
@@ -299,7 +336,9 @@ private fun RunningPanel(now: Long, onStop: () -> Unit) {
                 Icon(Icons.Filled.Block, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "${blocked.size} app${if (blocked.size > 1) "s" else ""} blocked",
+                    if (!isWebTrackingEnabled(context) || !Capabilities.accessibilityServiceConnected(context)) "App blocking unavailable — enable Accessibility"
+                    else if (pomodoro && currentPhase.kind == TimerController.PHASE_BREAK) "Apps available during break"
+                    else "${blocked.size} app${if (blocked.size > 1) "s" else ""} blocked",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -316,14 +355,34 @@ private fun RunningPanel(now: Long, onStop: () -> Unit) {
 @Composable
 private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: (FocusConfig) -> Unit) {
     val context = LocalContext.current
-    var intention by remember { mutableStateOf("") }
-    var goalId by remember { mutableStateOf<Long?>(null) }
-    var pomodoro by remember { mutableStateOf(false) }
-    var workMin by remember { mutableStateOf(25) }
-    var breakMin by remember { mutableStateOf(5) }
-    var dnd by remember { mutableStateOf(false) }
-    var blocked by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val presets = remember { context.getSharedPreferences("bibo_focus_defaults", android.content.Context.MODE_PRIVATE) }
+    var intention by rememberSaveable { mutableStateOf(presets.getString("intention", "").orEmpty()) }
+    var goalId by rememberSaveable { mutableStateOf(presets.getLong("goal", -1).takeIf { it > 0 }) }
+    var selectedTaskId by rememberSaveable { mutableStateOf(presets.getLong("task_id", -1).takeIf { it > 0 }) }
+    var pomodoro by rememberSaveable { mutableStateOf(presets.getBoolean("pomodoro", false)) }
+    var workMin by rememberSaveable { mutableStateOf(presets.getInt("work", 25)) }
+    var breakMin by rememberSaveable { mutableStateOf(presets.getInt("break", 5)) }
+    var dnd by rememberSaveable { mutableStateOf(presets.getBoolean("dnd", false)) }
+    var phaseSound by rememberSaveable { mutableStateOf(presets.getBoolean("phase_sound", true)) }
+    var lockscreenDetails by rememberSaveable { mutableStateOf(presets.getBoolean("lockscreen_details", false)) }
+    var sessionComment by rememberSaveable { mutableStateOf(presets.getBoolean("session_comment", false)) }
+    var blocked by remember { mutableStateOf(TimerController.lastBlockedApps(context)) }
     var showAppPicker by remember { mutableStateOf(false) }
+    LaunchedEffect(intention, goalId, selectedTaskId, pomodoro, workMin, breakMin, dnd, phaseSound, blocked, lockscreenDetails, sessionComment) {
+        presets.edit().putString("intention", intention).putLong("goal", goalId ?: -1).putBoolean("pomodoro", pomodoro)
+            .putInt("work", workMin).putInt("break", breakMin).putBoolean("dnd", dnd).putBoolean("phase_sound", phaseSound)
+            .putBoolean("lockscreen_details", lockscreenDetails).putBoolean("session_comment", sessionComment)
+            .putLong("task_id", selectedTaskId ?: -1)
+            .putStringSet("last_blocked_apps", blocked).apply()
+    }
+    val capabilities by produceState(initialValue = false to false) {
+        while (true) {
+            value = (isWebTrackingEnabled(context) && Capabilities.accessibilityServiceConnected(context)) to FocusDnd.hasAccess(context)
+            delay(1000)
+        }
+    }
+    val blockingReady = capabilities.first
+    val dndReady = capabilities.second
 
     Column(
         Modifier
@@ -333,7 +392,7 @@ private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: 
     ) {
         OutlinedTextField(
             value = intention,
-            onValueChange = { intention = it },
+            onValueChange = { intention = it; selectedTaskId = null },
             placeholder = {
                 Text("What are you focusing on?", style = MaterialTheme.typography.titleMedium)
             },
@@ -356,10 +415,11 @@ private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: 
                 ) {
                     suggestions.forEach { t ->
                         FilterChip(
-                            selected = intention == t.title,
+                            selected = selectedTaskId == t.id,
                             onClick = {
                                 intention = t.title
-                                if (t.goalId != null) goalId = t.goalId
+                                goalId = t.goalId
+                                selectedTaskId = t.id
                             },
                             leadingIcon = { Icon(Icons.Filled.PlayArrow, null, Modifier.size(16.dp)) },
                             label = { Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -373,11 +433,11 @@ private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Goal", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = goalId == null, onClick = { goalId = null }, label = { Text("None") })
+                    FilterChip(selected = goalId == null, onClick = { goalId = null; selectedTaskId = null }, label = { Text("None") })
                     goals.forEach { g ->
                         FilterChip(
                             selected = goalId == g.id,
-                            onClick = { goalId = g.id },
+                            onClick = { goalId = g.id; selectedTaskId = null },
                             leadingIcon = { Box(Modifier.size(10.dp).background(Color(g.color), CircleShape)) },
                             label = { Text(g.name) },
                         )
@@ -433,20 +493,42 @@ private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: 
                             }
                         }
                     }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Sound phase changes", Modifier.weight(1f))
+                        Switch(checked = phaseSound, onCheckedChange = { phaseSound = it })
+                    }
                 }
 
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.NotificationsOff, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(14.dp))
-                    Text("Silence phone (DND)", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    Text("Do Not Disturb (priority exceptions)", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
                     Switch(
                         checked = dnd,
                         onCheckedChange = {
-                            if (it && !FocusDnd.hasAccess(context)) FocusDnd.openSettings(context) else dnd = it
+                            dnd = it
+                            if (it && !FocusDnd.hasAccess(context)) FocusDnd.openSettings(context)
                         },
                     )
                 }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Show session details on lock screen", Modifier.weight(1f))
+                    Switch(checked = lockscreenDetails, onCheckedChange = { lockscreenDetails = it })
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Include Mentor encouragement", Modifier.weight(1f))
+                    Switch(checked = sessionComment, onCheckedChange = { sessionComment = it })
+                }
             }
+        }
+
+        if (blocked.isNotEmpty() && !blockingReady) {
+            Text("App blocking needs Bibo Accessibility access. Website recording is optional.", color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { openAccessibilitySettings(context) }) { Text("Enable app blocking") }
+        }
+        if (dnd && !dndReady) {
+            Text("Do Not Disturb access is required for this preset.", color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { FocusDnd.openSettings(context) }) { Text("Allow Do Not Disturb") }
         }
 
         Button(
@@ -460,10 +542,11 @@ private fun SetupPanel(goals: List<Goal>, suggestions: List<TodoTask>, onStart: 
                         workMin = workMin,
                         breakMin = breakMin,
                         dnd = dnd,
+                        taskId = selectedTaskId,
                     )
                 )
             },
-            enabled = intention.isNotBlank(),
+            enabled = intention.isNotBlank() && (blocked.isEmpty() || blockingReady) && (!dnd || dndReady),
             shape = MaterialTheme.shapes.large,
             modifier = Modifier
                 .fillMaxWidth()
@@ -520,6 +603,10 @@ private fun AppPickerSheet(
                     modifier = Modifier.padding(horizontal = 12.dp),
                 ) { Text("Allow display over apps") }
             }
+            if (!isWebTrackingEnabled(context) || !Capabilities.accessibilityServiceConnected(context)) {
+                Text("App blocking requires Bibo Accessibility access. Grant it before starting focus.", modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+                TextButton(onClick = { openAccessibilitySettings(context) }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("Enable app blocking") }
+            }
             LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
                 items(apps, key = { it.packageName }) { app ->
                     Row(
@@ -550,10 +637,12 @@ private fun AppPickerSheet(
 }
 
 @Composable
-private fun ReflectionSheet(onDismiss: () -> Unit, onSave: (String) -> Unit) {
+private fun ReflectionSheet(sessionId: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    val context = LocalContext.current
+    val drafts = remember { context.getSharedPreferences("bibo_reflection_drafts", android.content.Context.MODE_PRIVATE) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var note by remember { mutableStateOf("") }
-    ModalBottomSheet(onDismissRequest = { onSave("") }, sheetState = sheetState) {
+    var note by rememberSaveable(sessionId) { mutableStateOf(drafts.getString(sessionId, "").orEmpty()) }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -569,12 +658,12 @@ private fun ReflectionSheet(onDismiss: () -> Unit, onSave: (String) -> Unit) {
             )
             OutlinedTextField(
                 value = note,
-                onValueChange = { note = it },
+                onValueChange = { note = it; drafts.edit().putString(sessionId, it).apply() },
                 label = { Text("A line of reflection (optional)") },
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = { onSave("") }, modifier = Modifier.weight(1f)) { Text("Skip") }
+                OutlinedButton(onClick = { drafts.edit().remove(sessionId).apply(); onDismiss() }, modifier = Modifier.weight(1f)) { Text("Skip") }
                 Button(onClick = { onSave(note.trim()) }, modifier = Modifier.weight(1f)) { Text("Save") }
             }
         }

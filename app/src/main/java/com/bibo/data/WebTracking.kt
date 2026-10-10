@@ -13,6 +13,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collect
+import androidx.room.withTransaction
 
 /**
  * URL-bar view IDs per browser. The accessibility service reads the currently focused
@@ -36,17 +39,16 @@ val BROWSER_URL_BAR_IDS: Map<String, String> = mapOf(
 
 /** Extracts a registrable-ish domain from URL-bar text, or null if it isn't a URL. */
 fun extractDomain(raw: String?): String? {
-    val t = raw?.trim()?.lowercase() ?: return null
-    if (t.isEmpty() || t.contains(' ')) return null // search query, not a URL
-    var host = t
-        .substringAfter("://", t)
-        .substringBefore('/')
-        .substringBefore('?')
-        .removePrefix("www.")
-    host = host.substringBefore(':') // strip port
-    if (!host.contains('.') || host.any { it.isWhitespace() }) return null
-    if (host.startsWith("localhost") || host.all { it.isDigit() || it == '.' }) return null
-    return host.takeIf { it.length in 3..80 }
+    val t = raw?.trim()?.lowercase(java.util.Locale.ROOT) ?: return null
+    if (t.isEmpty() || t.any { it.isWhitespace() }) return null
+    if (listOf("mailto:", "about:", "javascript:", "data:", "file:", "content:").any(t::startsWith)) return null
+    val uri = runCatching { java.net.URI(if (t.contains("://")) t else "https://$t") }.getOrNull() ?: return null
+    if (uri.scheme !in setOf("http", "https")) return null
+    val authority = uri.rawAuthority ?: return null
+    val rawHost = authority.substringAfterLast('@').substringBefore(':').removePrefix("www.").trimEnd('.')
+    val host = runCatching { java.net.IDN.toASCII(rawHost, java.net.IDN.USE_STD3_ASCII_RULES) }.getOrNull() ?: return null
+    if (!host.contains('.') || host.all { it.isDigit() || it == '.' } || host.length > 253) return null
+    return host.takeIf { it.split('.').all { label -> label.isNotEmpty() && label.length <= 63 && !label.startsWith('-') && !label.endsWith('-') } }
 }
 
 /** True if the user has enabled Bibo's accessibility service. */
@@ -82,15 +84,22 @@ data class AppInfo(val packageName: String, val label: String)
 /** Launchable apps the user can choose to block (excludes Bibo itself), sorted by name. */
 fun launchableApps(context: Context): List<AppInfo> {
     val pm = context.packageManager
+    val protected = protectedFocusPackages(context)
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
     return pm.queryIntentActivities(intent, 0)
         .mapNotNull { ri ->
             val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
-            if (pkg == context.packageName) return@mapNotNull null
+            if (pkg in protected) return@mapNotNull null
             AppInfo(pkg, ri.loadLabel(pm).toString())
         }
         .distinctBy { it.packageName }
         .sortedBy { it.label.lowercase() }
+}
+
+private fun protectedFocusPackages(context: Context): Set<String> {
+    val homes = context.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)
+        .map { it.activityInfo.packageName }
+    return setOf(context.packageName, "com.android.systemui", "com.android.settings", "com.sec.android.app.launcher", "com.google.android.apps.nexuslauncher") + homes
 }
 
 /**
@@ -99,63 +108,91 @@ fun launchableApps(context: Context): List<AppInfo> {
  * the bar so browsers that don't emit content events (Firefox/GeckoView) are still tracked.
  */
 class WebTrackingService : AccessibilityService() {
+    companion object {
+        private fun historyGeneration(context: Context): Long = context.getSharedPreferences("bibo_web_history_generation", Context.MODE_PRIVATE).getLong("generation", 0)
+        fun resetRecordingHistory(context: Context) {
+            val p = context.getSharedPreferences("bibo_web_history_generation", Context.MODE_PRIVATE)
+            p.edit().putLong("generation", p.getLong("generation", 0) + 1).apply()
+        }
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var sessionObserver: Job? = null
+    private var receiverRegistered = false
 
     private var currentDomain: String? = null
     private var sessionStart = 0L
+    private var sessionElapsedStart = 0L
+    private var currentBrowser: String? = null
     private var lastUrlSample = 0L
+    private var recordingGeneration = -1L
 
     private var overlay: android.view.View? = null
     private var overlayForPkg: String? = null
 
-    private val systemPackages = setOf(
-        packageName, "com.android.systemui",
-        "com.sec.android.app.launcher", "com.google.android.apps.nexuslauncher",
-    )
+    private val systemPackages by lazy { protectedFocusPackages(this) }
+    private var screenOn = true
 
     // Runs faster while a focus session is actively blocking, so a blocked app is covered
     // within ~1s; otherwise it just ticks the URL sampler every 15s.
     private val tick = object : Runnable {
         override fun run() {
             val now = System.currentTimeMillis()
-            if (now - lastUrlSample >= 15_000L) {
+            if (screenOn && WebsiteTrackingSettings.enabled(this@WebTrackingService) && now - lastUrlSample >= 15_000L) {
                 sample()
+                checkpointCurrent()
                 lastUrlSample = now
             }
             val blocking = blockingActive()
-            if (blocking) enforceBlock() else removeOverlay()
-            handler.postDelayed(this, if (blocking) 1_200L else 15_000L)
+            if (blocking && screenOn) enforceBlock() else removeOverlay()
+            if (!WebsiteTrackingSettings.enabled(this@WebTrackingService)) commitCurrent()
+            val focusConfigured = TimerController.isFocus(this@WebTrackingService) && TimerController.blockedApps(this@WebTrackingService).isNotEmpty()
+            handler.postDelayed(this, if (focusConfigured) 1_200L else 15_000L)
         }
     }
 
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_OFF) commitCurrent()
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> { screenOn = false; commitCurrent(); removeOverlay() }
+                Intent.ACTION_SCREEN_ON -> { screenOn = true; lastUrlSample = 0 }
+            }
         }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        Capabilities.setAccessibilityServiceConnected(this, true)
+        screenOn = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
+        AppScope.io.launch { TimerController.initialize(applicationContext) }
+        sessionObserver?.cancel()
+        sessionObserver = scope.launch(Dispatchers.Main) {
+            TimerController.state.collect { handler.removeCallbacks(tick); handler.post(tick) }
+        }
         // Events don't fire reliably on all OEMs (One UI), so the periodic tick is the
         // primary sampler / blocker; events, when they arrive, refine it.
-        handler.postDelayed(tick, 3_000L)
-        registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+        if (!receiverRegistered) {
+            registerReceiver(screenOffReceiver, IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON) })
+            receiverRegistered = true
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        sample()
-        if (blockingActive()) enforceBlock()
+        if (screenOn && WebsiteTrackingSettings.enabled(this)) sample()
+        if (blockingActive() && screenOn) enforceBlock() else removeOverlay()
     }
 
-    override fun onInterrupt() {}
+    override fun onInterrupt() { commitCurrent(); removeOverlay() }
 
     override fun onDestroy() {
         super.onDestroy()
+        Capabilities.setAccessibilityServiceConnected(this, false)
         handler.removeCallbacks(tick)
+        sessionObserver?.cancel()
         removeOverlay()
-        runCatching { unregisterReceiver(screenOffReceiver) }
+        if (receiverRegistered) runCatching { unregisterReceiver(screenOffReceiver) }
+        receiverRegistered = false
         commitCurrent()
     }
 
@@ -172,7 +209,10 @@ class WebTrackingService : AccessibilityService() {
     }
 
     private fun enforceBlock() {
-        val pkg = rootInActiveWindow?.packageName?.toString() ?: return
+        // An app overlay must not become its own blocker target. Read the underlying
+        // application window rather than the active Bibo overlay when one is present.
+        val appRoot = if (overlay != null) windows.firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.root?.packageName?.toString() != packageName }?.root else rootInActiveWindow
+        val pkg = appRoot?.packageName?.toString() ?: run { removeOverlay(); return }
         if (pkg in systemPackages) {
             removeOverlay()
             return
@@ -181,25 +221,26 @@ class WebTrackingService : AccessibilityService() {
     }
 
     private fun showOverlay(pkg: String) {
-        if (overlay != null && overlayForPkg == pkg) return
         if (!Settings.canDrawOverlays(this)) {
+            removeOverlay()
             performGlobalAction(GLOBAL_ACTION_HOME) // fallback: bounce to home
             return
         }
+        if (overlay != null && overlayForPkg == pkg) return
         removeOverlay()
         val view = buildOverlay(pkg)
         val params = android.view.WindowManager.LayoutParams(
             android.view.WindowManager.LayoutParams.MATCH_PARENT,
             android.view.WindowManager.LayoutParams.MATCH_PARENT,
             android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             android.graphics.PixelFormat.TRANSLUCENT,
         )
         runCatching {
             (getSystemService(WINDOW_SERVICE) as android.view.WindowManager).addView(view, params)
             overlay = view
             overlayForPkg = pkg
-        }
+        }.onFailure { performGlobalAction(GLOBAL_ACTION_HOME) }
     }
 
     private fun removeOverlay() {
@@ -248,28 +289,43 @@ class WebTrackingService : AccessibilityService() {
                 text = "End focus early"
                 setOnClickListener {
                     removeOverlay()
-                    TimerController.stopTimer(this@WebTrackingService)
+                    TimerController.sessionId(this@WebTrackingService)?.let { id -> AppScope.io.launch { TimerController.stopSession(this@WebTrackingService, id) } }
                 }
             })
         }
     }
 
     private fun sample() {
-        val root = rootInActiveWindow ?: return
+        val generation = historyGeneration(this)
+        if (recordingGeneration != generation) {
+            recordingGeneration = generation
+            currentDomain = null
+            sessionStart = 0
+        }
+        if (!screenOn || !WebsiteTrackingSettings.enabled(this)) { commitCurrent(); return }
+        val root = rootInActiveWindow ?: run { commitCurrent(); return }
         val pkg = root.packageName?.toString() ?: return
+        if (currentBrowser != null && currentBrowser != pkg) commitCurrent()
         val viewId = BROWSER_URL_BAR_IDS[pkg]
         if (viewId == null) {
+            currentBrowser = null
             commitCurrent() // left the browser for another app
             return
         }
+        currentBrowser = pkg
         val text = runCatching {
             root.findAccessibilityNodeInfosByViewId(viewId).firstOrNull()?.text?.toString()
         }.getOrNull()
-        val domain = extractDomain(text) ?: return // toolbar hidden / search: keep session
+        val domain = extractDomain(text)
+        if (domain == null) {
+            if (text != null) commitCurrent() // visible search/new-tab address is not the old site
+            return // a hidden toolbar may still display the same page
+        }
         if (domain != currentDomain) {
             commitCurrent()
             currentDomain = domain
             sessionStart = System.currentTimeMillis()
+            sessionElapsedStart = android.os.SystemClock.elapsedRealtime()
         }
     }
 
@@ -279,13 +335,27 @@ class WebTrackingService : AccessibilityService() {
         currentDomain = null
         sessionStart = 0L
         if (start <= 0L) return
-        val end = System.currentTimeMillis()
+        val end = start + (android.os.SystemClock.elapsedRealtime() - sessionElapsedStart).coerceAtLeast(0)
+        val generation = recordingGeneration
         if (end - start < 3_000L) return
         scope.launch {
             runCatching {
-                BiboDb.get(applicationContext).websites()
-                    .insert(WebsiteSession(domain = domain, startMillis = start, endMillis = end))
-            }
+                val db = BiboDb.get(applicationContext)
+                db.withTransaction {
+                    if (generation == historyGeneration(applicationContext)) db.websites()
+                        .insert(WebsiteSession(domain = domain, startMillis = start, endMillis = end))
+                }
+            }.onSuccess { WebsiteTrackingSettings.reportError(null) }
+                .onFailure { WebsiteTrackingSettings.reportError("Website time could not be saved. Check free storage and restart collection.") }
         }
+    }
+
+    /** Commit finite slices so process loss cannot erase an entire browsing visit. */
+    private fun checkpointCurrent() {
+        val domain = currentDomain ?: return
+        commitCurrent()
+        currentDomain = domain
+        sessionStart = System.currentTimeMillis()
+        sessionElapsedStart = android.os.SystemClock.elapsedRealtime()
     }
 }

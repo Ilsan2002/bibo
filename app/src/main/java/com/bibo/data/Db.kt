@@ -1,6 +1,7 @@
 package com.bibo.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Delete
@@ -22,7 +23,7 @@ import kotlinx.coroutines.flow.Flow
  * A logged block of time that shows up on the calendar:
  * manually added events, timer sessions, completed todos, voice logs.
  */
-@Entity(tableName = "activity_blocks")
+@Entity(tableName = "activity_blocks", indices = [Index(value = ["commandId"], unique = true)])
 data class ActivityBlock(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
@@ -32,6 +33,13 @@ data class ActivityBlock(
     val color: Int? = null,
     val note: String? = null, // post-session reflection (focus sessions)
     val goalId: Long? = null, // goal a focus session counted toward
+    val taskId: Long? = null,
+    val sessionId: String? = null,
+    val completionId: Long? = null,
+    @ColumnInfo(defaultValue = "'LEGACY'") val provenance: String = "LEGACY",
+    @ColumnInfo(defaultValue = "0") val allDay: Boolean = false,
+    val eventZone: String? = null,
+    val commandId: String? = null,
 )
 
 @Dao
@@ -39,19 +47,31 @@ interface ActivityBlockDao {
     @Insert
     suspend fun insert(block: ActivityBlock): Long
 
+    @Query("SELECT * FROM activity_blocks WHERE id=:id")
+    suspend fun byId(id: Long): ActivityBlock?
+
+    @Query("SELECT * FROM activity_blocks WHERE commandId=:commandId LIMIT 1")
+    suspend fun byCommandId(commandId: String): ActivityBlock?
+
+    @Query("UPDATE activity_blocks SET title=:title,startMillis=:startMillis,endMillis=:endMillis WHERE id=:id")
+    suspend fun updateTitleAndTime(id: Long, title: String, startMillis: Long, endMillis: Long)
+
+    @Query("DELETE FROM activity_blocks WHERE completionId=:completionId")
+    suspend fun deleteCompletion(completionId: Long)
+
     @Update
     suspend fun update(block: ActivityBlock)
 
     @Query(
         "SELECT * FROM activity_blocks " +
-            "WHERE startMillis < :windowEnd AND endMillis > :windowStart " +
+            "WHERE (startMillis < :windowEnd AND endMillis > :windowStart) OR (startMillis = endMillis AND startMillis >= :windowStart AND startMillis < :windowEnd) " +
             "ORDER BY startMillis"
     )
     fun blocksIn(windowStart: Long, windowEnd: Long): Flow<List<ActivityBlock>>
 
     @Query(
         "SELECT * FROM activity_blocks " +
-            "WHERE startMillis < :windowEnd AND endMillis > :windowStart " +
+            "WHERE (startMillis < :windowEnd AND endMillis > :windowStart) OR (startMillis = endMillis AND startMillis >= :windowStart AND startMillis < :windowEnd) " +
             "ORDER BY startMillis"
     )
     suspend fun blocksInList(windowStart: Long, windowEnd: Long): List<ActivityBlock>
@@ -66,7 +86,7 @@ interface ActivityBlockDao {
     suspend fun delete(block: ActivityBlock)
 }
 
-@Entity(tableName = "todo_tasks")
+@Entity(tableName = "todo_tasks", indices = [Index(value = ["parentId"]), Index(value = ["goalId"])])
 data class TodoTask(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
@@ -80,6 +100,9 @@ data class TodoTask(
     val reminderAt: Long? = null, // when to fire a reminder notification (epoch millis)
     val reminderNote: String? = null, // motivational framing tying the step to the goal
     val rewardCents: Int = 0, // treat money earned when this task is completed
+    val deletedAt: Long? = null, // tombstone preserves linked history and coherent undo
+    val completedBy: Long? = null, // completion/cascade identity
+    val deletedBy: String? = null, // deletion batch: old Undo cannot reverse a newer delete
 )
 
 /** A "хотелка" — something the user wants, funded by earning treat money from tasks. */
@@ -108,6 +131,12 @@ interface WishlistDao {
 
     @Query("SELECT * FROM wishlist_items ORDER BY redeemedAt IS NOT NULL, priceCents")
     suspend fun allOnce(): List<WishlistItem>
+
+    @Query("SELECT * FROM wishlist_items WHERE id=:id")
+    suspend fun byId(id: Long): WishlistItem?
+
+    @Query("UPDATE wishlist_items SET redeemedAt=:at WHERE id=:id AND redeemedAt IS NULL")
+    suspend fun redeemIfAvailable(id: Long, at: Long): Int
 
     @Query("SELECT COALESCE(SUM(priceCents),0) FROM wishlist_items WHERE redeemedAt >= :since")
     suspend fun redeemedCentsSince(since: Long): Int
@@ -142,6 +171,15 @@ interface GoalDao {
     @Query("SELECT * FROM goals WHERE archived = 0 ORDER BY createdAt")
     suspend fun allOnce(): List<Goal>
 
+    @Query("SELECT * FROM goals ORDER BY archived,createdAt")
+    fun allIncludingArchived(): Flow<List<Goal>>
+
+    @Query("SELECT * FROM goals WHERE id=:id")
+    suspend fun byId(id: Long): Goal?
+
+    @Query("UPDATE goals SET archived=:archived WHERE id=:id")
+    suspend fun setArchived(id: Long, archived: Boolean)
+
     /** Every goal, including archived ones — so the mentor can edit or restore a retired goal. */
     @Query("SELECT * FROM goals ORDER BY createdAt")
     suspend fun allWithArchived(): List<Goal>
@@ -167,49 +205,73 @@ interface TodoDao {
     @Query("DELETE FROM todo_tasks WHERE parentId = :parentId")
     suspend fun deleteChildren(parentId: Long)
 
-    @Query("SELECT * FROM todo_tasks ORDER BY sortOrder")
+    @Query("SELECT * FROM todo_tasks WHERE deletedAt IS NULL ORDER BY sortOrder,id")
     fun all(): Flow<List<TodoTask>>
+
+    @Query("SELECT * FROM todo_tasks WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC,id")
+    fun deleted(): Flow<List<TodoTask>>
+
+    @Query("SELECT * FROM todo_tasks WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC,id")
+    suspend fun deletedOnce(): List<TodoTask>
 
     @Query(
         "SELECT * FROM todo_tasks " +
-            "WHERE dueEpochDay BETWEEN :start AND :end AND completedAt IS NULL"
+            "WHERE dueEpochDay BETWEEN :start AND :end AND completedAt IS NULL AND deletedAt IS NULL"
     )
     fun dueInRange(start: Long, end: Long): Flow<List<TodoTask>>
+
+    @Query("UPDATE todo_tasks SET title=:title WHERE id=:id AND deletedAt IS NULL")
+    suspend fun updateTitle(id: Long, title: String)
+
+    @Query("UPDATE todo_tasks SET sortOrder=:position WHERE id=:id AND deletedAt IS NULL")
+    suspend fun updateSortOrder(id: Long, position: Long)
+
+    @Query("UPDATE todo_tasks SET startedAt=:at WHERE id=:id AND deletedAt IS NULL")
+    suspend fun setStartedAt(id: Long, at: Long?)
+
+    @Query("UPDATE todo_tasks SET completedAt=:at,completedBy=:completionId,startedAt=NULL WHERE id=:id AND deletedAt IS NULL")
+    suspend fun setCompleted(id: Long, at: Long?, completionId: Long?)
+
+    @Query("UPDATE todo_tasks SET deletedAt=:at,deletedBy=:deletionId,startedAt=NULL WHERE id=:id")
+    suspend fun setDeleted(id: Long, at: Long?, deletionId: String? = null)
+
+    @Query("SELECT * FROM todo_tasks WHERE completedBy=:completionId AND deletedAt IS NULL")
+    suspend fun completedBy(completionId: Long): List<TodoTask>
 
     @Query("UPDATE todo_tasks SET goalId = NULL WHERE goalId = :goalId")
     suspend fun clearGoal(goalId: Long)
 
     @Query(
-        "SELECT * FROM todo_tasks WHERE goalId = :goalId AND completedAt IS NULL " +
+        "SELECT * FROM todo_tasks WHERE goalId = :goalId AND completedAt IS NULL AND deletedAt IS NULL " +
             "AND parentId IS NULL ORDER BY sortOrder LIMIT 1"
     )
     suspend fun nextForGoal(goalId: Long): TodoTask?
 
-    @Query("SELECT COUNT(*) FROM todo_tasks WHERE goalId = :goalId")
+    @Query("SELECT COUNT(*) FROM todo_tasks WHERE goalId = :goalId AND deletedAt IS NULL")
     suspend fun countForGoal(goalId: Long): Int
 
-    @Query("SELECT COUNT(*) FROM todo_tasks WHERE goalId = :goalId AND completedAt IS NOT NULL")
+    @Query("SELECT COUNT(*) FROM todo_tasks WHERE goalId = :goalId AND completedAt IS NOT NULL AND deletedAt IS NULL")
     suspend fun completedCountForGoal(goalId: Long): Int
 
-    @Query("SELECT title FROM todo_tasks WHERE completedAt BETWEEN :start AND :end")
+    @Query("SELECT title FROM todo_tasks WHERE completedAt >= :start AND completedAt < :end AND deletedAt IS NULL")
     suspend fun completedTitlesBetween(start: Long, end: Long): List<String>
 
-    @Query("SELECT title FROM todo_tasks WHERE dueEpochDay = :epochDay AND completedAt IS NULL")
+    @Query("SELECT title FROM todo_tasks WHERE dueEpochDay = :epochDay AND completedAt IS NULL AND deletedAt IS NULL")
     suspend fun dueTitlesOnDay(epochDay: Long): List<String>
 
-    @Query("SELECT * FROM todo_tasks WHERE completedAt IS NULL")
+    @Query("SELECT * FROM todo_tasks WHERE completedAt IS NULL AND deletedAt IS NULL")
     suspend fun incompleteOnce(): List<TodoTask>
 
-    @Query("SELECT * FROM todo_tasks ORDER BY sortOrder")
+    @Query("SELECT * FROM todo_tasks WHERE deletedAt IS NULL ORDER BY sortOrder,id")
     suspend fun allOnce(): List<TodoTask>
 
-    @Query("SELECT * FROM todo_tasks WHERE goalId = :goalId ORDER BY sortOrder")
+    @Query("SELECT * FROM todo_tasks WHERE goalId = :goalId AND deletedAt IS NULL ORDER BY sortOrder,id")
     fun forGoal(goalId: Long): Flow<List<TodoTask>>
 
     @Query("SELECT * FROM todo_tasks WHERE id = :id")
     suspend fun byId(id: Long): TodoTask?
 
-    @Query("SELECT * FROM todo_tasks WHERE reminderAt IS NOT NULL AND completedAt IS NULL")
+    @Query("SELECT * FROM todo_tasks WHERE reminderAt IS NOT NULL AND completedAt IS NULL AND deletedAt IS NULL")
     suspend fun withReminders(): List<TodoTask>
 
     @Query("SELECT COALESCE(SUM(rewardCents),0) FROM todo_tasks WHERE completedAt >= :since")
@@ -226,7 +288,7 @@ interface TodoDao {
  */
 @Entity(
     tableName = "usage_sessions",
-    indices = [Index(value = ["packageName", "startMillis"], unique = true)],
+    indices = [Index(value = ["packageName", "startMillis"], unique = true), Index(value = ["startMillis"])],
 )
 data class UsageSessionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -251,6 +313,12 @@ interface UsageDao {
     @Query("DELETE FROM usage_sessions WHERE endMillis < :before")
     suspend fun pruneBefore(before: Long)
 
+    @Query("SELECT * FROM usage_sessions WHERE startMillis < :windowEnd AND endMillis > :windowStart ORDER BY startMillis")
+    fun sessionsInFlow(windowStart: Long, windowEnd: Long): Flow<List<UsageSessionEntity>>
+
+    @Query("DELETE FROM usage_sessions WHERE startMillis < :to AND endMillis > :from")
+    suspend fun deleteOverlapping(from: Long, to: Long)
+
     @Query("DELETE FROM usage_sessions WHERE startMillis >= :from")
     suspend fun deleteFrom(from: Long)
 }
@@ -263,6 +331,7 @@ data class HabitDay(
     val cleanClothes: Boolean = false,
     val workedOut: Boolean = false,
     val prayed: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val loggedMask: Int = 0,
 )
 
 /** A single food/drink logged for a day, with estimated nutrition. */
@@ -275,12 +344,29 @@ data class FoodEntry(
     val calories: Int,
     val sugarG: Double,
     val caffeineMg: Int,
+    @ColumnInfo(defaultValue = "1") val estimated: Boolean = true,
+    @ColumnInfo(defaultValue = "'manual'") val provenance: String = "manual",
 )
 
 @Dao
 interface HabitDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun ensureDay(day: HabitDay): Long
+
     @Upsert
     suspend fun upsert(day: HabitDay)
+
+    @Query("UPDATE habit_days SET showered=COALESCE(:value,0),loggedMask=CASE WHEN :value IS NULL THEN loggedMask & ~1 ELSE loggedMask | 1 END WHERE epochDay=:epochDay")
+    suspend fun setShowered(epochDay: Long, value: Boolean?)
+
+    @Query("UPDATE habit_days SET cleanClothes=COALESCE(:value,0),loggedMask=CASE WHEN :value IS NULL THEN loggedMask & ~2 ELSE loggedMask | 2 END WHERE epochDay=:epochDay")
+    suspend fun setCleanClothes(epochDay: Long, value: Boolean?)
+
+    @Query("UPDATE habit_days SET workedOut=COALESCE(:value,0),loggedMask=CASE WHEN :value IS NULL THEN loggedMask & ~4 ELSE loggedMask | 4 END WHERE epochDay=:epochDay")
+    suspend fun setWorkedOut(epochDay: Long, value: Boolean?)
+
+    @Query("UPDATE habit_days SET prayed=COALESCE(:value,0),loggedMask=CASE WHEN :value IS NULL THEN loggedMask & ~8 ELSE loggedMask | 8 END WHERE epochDay=:epochDay")
+    suspend fun setPrayed(epochDay: Long, value: Boolean?)
 
     @Query("SELECT * FROM habit_days WHERE epochDay = :epochDay")
     fun forDay(epochDay: Long): Flow<HabitDay?>
@@ -294,6 +380,9 @@ interface HabitDao {
 
 @Dao
 interface FoodDao {
+    @Update suspend fun update(entry: FoodEntry)
+    @Query("SELECT * FROM food_entries WHERE id=:id") suspend fun byId(id: Long): FoodEntry?
+
     @Insert
     suspend fun insert(entry: FoodEntry): Long
 
@@ -350,6 +439,11 @@ interface WebsiteDao {
             "ORDER BY startMillis"
     )
     suspend fun sessionsIn(windowStart: Long, windowEnd: Long): List<WebsiteSession>
+
+    @Query("SELECT * FROM website_sessions WHERE startMillis < :windowEnd AND endMillis > :windowStart ORDER BY startMillis")
+    fun sessionsInFlow(windowStart: Long, windowEnd: Long): Flow<List<WebsiteSession>>
+
+    @Query("DELETE FROM website_sessions") suspend fun clear()
 
     @Query("DELETE FROM website_sessions WHERE endMillis < :before")
     suspend fun pruneBefore(before: Long)
@@ -440,10 +534,13 @@ data class ChatMessage(
 data class ChatDay(
     @PrimaryKey val epochDay: Long,
     val digest: String,
+    @ColumnInfo(defaultValue = "1") val conversationCompacted: Boolean = true,
 )
 
 @Dao
 interface ChatDao {
+    @Query("DELETE FROM chat_messages") suspend fun clear()
+
     @Insert
     suspend fun insert(message: ChatMessage): Long
 
@@ -458,7 +555,7 @@ interface ChatDao {
 
     @Query(
         "SELECT DISTINCT epochDay FROM chat_messages WHERE epochDay < :today " +
-            "AND epochDay NOT IN (SELECT epochDay FROM chat_days) ORDER BY epochDay"
+            "AND epochDay NOT IN (SELECT epochDay FROM chat_days WHERE conversationCompacted = 1) ORDER BY epochDay"
     )
     suspend fun undigestedDays(today: Long): List<Long>
 
@@ -471,6 +568,8 @@ interface ChatDao {
 
 @Dao
 interface ChatDayDao {
+    @Query("DELETE FROM chat_days") suspend fun clear()
+
     @Upsert
     suspend fun upsert(day: ChatDay)
 
@@ -527,10 +626,12 @@ private val MIGRATION_11_12 = object : Migration(11, 12) {
     entities = [
         ActivityBlock::class, TodoTask::class, UsageSessionEntity::class, WebsiteSession::class,
         HabitDay::class, FoodEntry::class, Goal::class, ChatMessage::class, ChatDay::class,
-        WishlistItem::class,
+        WishlistItem::class, WorkSession::class, SessionSegment::class, RewardEntry::class,
+        CommandRecord::class, TaskCompletion::class, UsageCoverage::class,
+        MentorTurn::class, MentorMemoryRevision::class, MentorCompactionProgress::class, MigrationRepair::class,
     ],
-    version = 12,
-    exportSchema = false,
+    version = 13,
+    exportSchema = true,
 )
 abstract class BiboDb : RoomDatabase() {
     abstract fun activityBlocks(): ActivityBlockDao
@@ -544,25 +645,49 @@ abstract class BiboDb : RoomDatabase() {
     abstract fun chatDays(): ChatDayDao
     abstract fun wishlist(): WishlistDao
 
+    abstract fun workSessions(): WorkSessionDao
+    abstract fun sessionSegments(): SessionSegmentDao
+    abstract fun rewards(): RewardDao
+    abstract fun commands(): CommandDao
+    abstract fun completions(): TaskCompletionDao
+    abstract fun usageCoverage(): UsageCoverageDao
+    abstract fun mentorTurns(): MentorTurnDao
+    abstract fun mentorMemory(): MentorMemoryDao
+    abstract fun mentorHistory(): MentorHistoryDao
+    abstract fun mentorCompaction(): MentorCompactionDao
+    abstract fun migrationRepairs(): MigrationRepairDao
+
     companion object {
         @Volatile
         private var instance: BiboDb? = null
 
-        fun get(context: Context): BiboDb =
-            instance ?: synchronized(this) {
-                instance ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    BiboDb::class.java,
-                    "bibo.db",
-                ).addMigrations(
-                    MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-                    MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
-                )
-                    // No destructive fallback. This database IS the user's history — every
-                    // task, focus session, chat and memory note. A version bump without a
-                    // migration must fail loudly on launch so the migration gets written,
-                    // never silently drop every table.
-                    .build().also { instance = it }
+        fun migrations() = arrayOf(
+            MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
+            MIGRATION_12_13,
+        )
+
+        fun builder(context: Context, name: String): RoomDatabase.Builder<BiboDb> =
+            Room.databaseBuilder(context.applicationContext, BiboDb::class.java, name)
+                .addMigrations(*migrations())
+
+        internal fun replaceInstanceForTesting(database: BiboDb?) = synchronized(this) {
+            instance?.close()
+            instance = database
+        }
+
+        fun closeForMaintenance() = synchronized(this) {
+            instance?.close()
+            instance = null
+        }
+
+        fun get(context: Context): BiboDb {
+            BackupRecovery.recoverInterruptedRestore(context.applicationContext)
+            check(!BackupRecovery.isMaintenance) { "Backup maintenance is active. Restart Bibo to continue." }
+            return instance ?: synchronized(this) {
+                check(!BackupRecovery.isMaintenance) { "Backup maintenance is active." }
+                instance ?: builder(context, "bibo.db").build().also { instance = it }
             }
+        }
     }
 }

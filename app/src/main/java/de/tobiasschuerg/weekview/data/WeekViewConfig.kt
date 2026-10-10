@@ -6,7 +6,7 @@ data class WeekViewConfig(
     val maxScalingFactor: Float = 2f,
     val showCurrentTimeIndicator: Boolean = true,
     val highlightCurrentDay: Boolean = true,
-    val currentTimeLineOnlyToday: Boolean = false,
+    val currentTimeLineOnlyToday: Boolean = true,
     // Bibo patch: hide the built-in day header when the host app renders its own
     val showDayHeader: Boolean = true,
 ) {

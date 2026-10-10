@@ -27,20 +27,18 @@ object EventPositionUtil {
         scalingFactor: Float,
     ): Pair<Dp, Dp> {
         // Minutes since the start of the visible column
-        val startMinutes =
-            (event.timeSpan.start.hour - startTime.hour) * 60 +
-                (event.timeSpan.start.minute - startTime.minute)
+        val startMinutes = (event.timeSpan.startSecond - startTime.toNanoOfDay() / 1e9) / 60.0
         // Duration of the event in minutes
-        val durationMinutes = event.timeSpan.duration.toMinutes().toInt()
+        val durationMinutes = event.timeSpan.duration.toNanos() / 60_000_000_000.0
 
         // Clamp negative offsets to zero so events before the visible start are not shown above the grid
-        val clampedStartMinutes = startMinutes.coerceAtLeast(0)
+        val clampedStartMinutes = startMinutes.coerceAtLeast(0.0)
         // Reduce duration by the amount clamped so the event's bottom edge stays correct
-        val adjustedDurationMinutes = (durationMinutes - (clampedStartMinutes - startMinutes)).coerceAtLeast(0)
+        val adjustedDurationMinutes = (durationMinutes - (clampedStartMinutes - startMinutes)).coerceAtLeast(0.0)
 
         // Convert to dp
-        val topOffset = (clampedStartMinutes * scalingFactor).dp
-        val eventHeight = (adjustedDurationMinutes * scalingFactor).dp
+        val topOffset = (clampedStartMinutes * scalingFactor).toFloat().dp
+        val eventHeight = (adjustedDurationMinutes * scalingFactor).toFloat().dp
 
         return Pair(topOffset, eventHeight)
     }
